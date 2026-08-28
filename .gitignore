@@ -8,5 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
-/notebooks
+notebooks/temp.ipynb
 /docs
+GEMINI.md
+
+skills
+
+datasets

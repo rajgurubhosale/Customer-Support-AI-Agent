@@ -8,8 +8,12 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "faker>=40.37.0",
     "langchain-core>=1.6.0",
     "langgraph>=1.2.11",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "psycopg2-binary>=2.9.12",
 ]
 
 [project.scripts]
