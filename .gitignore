@@ -15,3 +15,6 @@ GEMINI.md
 skills
 
 datasets
+src\customer_support_ai_agent\__pycache__
+
+.vscode
