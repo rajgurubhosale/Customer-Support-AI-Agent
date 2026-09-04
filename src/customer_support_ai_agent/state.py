@@ -14,11 +14,17 @@ class CustomerState(TypedDict, total=False):
 
      # blocked for the delivery is done and its more than  7 days we dont return order ask for the ticket
      cancel_eligible: Optional[Literal["auto", "guided", "blocked"]]
+     
+     return_blocked_choice: Optional[str]
+     guided_choice: Optional[str]
 
      retry_count: int                          
      customer_details: Optional[Dict[str, Any]]
      retry_exhausted_choice: Optional[str]   
-     confirmed: Optional[bool]
+     
+     
+     cancel_confirmed: Optional[bool]
+     return_confirmed: Optional[bool]
      
      order_id: Optional[str]
      context: Optional[Dict[str, Any]]
