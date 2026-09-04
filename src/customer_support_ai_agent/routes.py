@@ -20,6 +20,8 @@ def route_menu(state: CustomerState) -> str:
         return "human_escalate" 
     elif action == "demo":
         return "demo_node"  
+    elif action == "exit":
+        return "end"
     elif action == "unclear":
         return "start"
     
@@ -39,13 +41,13 @@ def route_order_lookup(state: CustomerState) -> str:
     action = state.get("action_type")   
 
     # Cancel Flow
-    if action == "cancel":
+    if action == "cancel_order":
         if status == "Placed":
             return "eligible"
         return "blocked"
 
     # Return Flow
-    if action == "return":
+    if action == "return_order":
         delivery_date = order.get("delivery_date")
         if status == "Delivered" and delivery_date:
             d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date

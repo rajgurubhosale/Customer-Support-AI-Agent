@@ -6,7 +6,7 @@ class CustomerState(TypedDict, total=False):
     user_id: Optional[str]
     session_id: Optional[str]
     menu_choice: Optional[str]
-    action_type: Optional[Literal["cancel", "return", "faq", "escalate", "demo"]]
+    action_type: Optional[Literal["cancel_order", "return_order", "faq", "human_support", "demo", "unclear", "exit"]]
 
     order_id: Optional[str]
     customer_details: Optional[Dict[str, Any]]

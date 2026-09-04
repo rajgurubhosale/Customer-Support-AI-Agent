@@ -1,5 +1,5 @@
 
-from asyncio import coroutines
+
 from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 from customer_support_ai_agent.state import CustomerState
@@ -80,6 +80,18 @@ def entry_node(state: CustomerState) -> dict:
         action_type = "human_support"
     elif user_input in ("5", "demo", "video"):
         action_type = "demo"
+    elif user_input in ("no", "nothing", "bye", "exit", "quit", "done", "nope"):
+        return {
+            "menu_choice": user_input,
+            "action_type": "exit",
+            "order_id": None,
+            "customer_details": None,
+            "retry_count": 0,
+            "confirmed": None,
+            "policy_block_reason": None,
+            "context": None,
+            "messages": [AIMessage(content="No problem! Have a wonderful day! 👋")],
+        }
     
     # Step C: Strict LLM Intent Classification (Only when shortcuts didn't match)
     else:
@@ -168,8 +180,9 @@ def confirm_action_node(state: CustomerState) -> dict:
     all_items = order.get("items", [])
     total_amount = order.get("total_amount", 0)
     action = state.get("action_type", "cancel")
-    action_verb = "cancel" if action == "cancel" else "return"
-    action_noun = "Cancellation" if action == "cancel" else "Return Request"
+
+    action_verb = "cancel" if action == "cancel_order" else "return"
+    action_noun = "Cancellation" if action == "cancel_order" else "Return Request"
 
     # Filter for active items that can still be cancelled or returned
     active_items = [it for it in all_items if it.get("item_status") not in ("Cancelled", "Returned")]
@@ -187,10 +200,11 @@ def confirm_action_node(state: CustomerState) -> dict:
         max_qty = item.get("quantity", 1)
         unit_price = item.get("unit_price", total_amount)
 
-        action_done = "cancelled" if action == "cancel" else "returned"
+        action_done = "cancelled" if action == "cancel_order" else "returned"
+
         refund_note = (
             f"A refund of ₹{total_amount} has been initiated."
-            if action == "cancel"
+            if action == "cancel_order"
             else f"Our courier will pick up the package within 24–48 hours. A refund of ₹{total_amount} will be processed after inspection."
         )
 
@@ -304,7 +318,7 @@ def confirm_action_node(state: CustomerState) -> dict:
             "messages": [AIMessage(content=f"No changes made to Order #{order_id}. Returning to main menu.")],
         }
 
-    action_done = "cancelled" if action == "cancel" else "returned"
+    action_done = "cancelled" if action == "cancel_order" else "returned"
 
     # If user wants to cancel/return the ENTIRE order:
     if reply in ("all", "entire"):
@@ -385,7 +399,7 @@ def confirm_action_node(state: CustomerState) -> dict:
     if final_reply in ("y", "yes", "1", "confirm", "sure", "proceed"):
         note = (
             f"A refund of ₹{refund_calc} has been initiated."
-            if action == "cancel"
+            if action == "cancel_order"
             else f"Our courier will pick up within 24–48 hours. Refund of ₹{refund_calc} will follow."
         )
         return {
@@ -433,7 +447,7 @@ def policy_blocked_node(state: CustomerState) -> dict:
     delivery_date = order.get("delivery_date")
 
     # --- 1. Policy Explanation Messages ---
-    if action == "cancel":
+    if action == "cancel_order":
         if status in ("Shipped", "Out for Delivery"):
             msg = (
                 f"🚚 Order #{order_id} has already shipped and is on its way! "
@@ -450,7 +464,7 @@ def policy_blocked_node(state: CustomerState) -> dict:
         else:
             msg = f"Order #{order_id} is currently '{status}' and cannot be cancelled."
 
-    elif action == "return":
+    elif action == "return_order":
         if status == "Delivered" and delivery_date:
             d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
             days_ago = (date.today() - d_date).days
@@ -483,6 +497,7 @@ def policy_blocked_node(state: CustomerState) -> dict:
         "TYPE: 2 -> Return to Main Menu\n"
         "(Or simply type your question/complaint)"
     ).strip()
+
 
     # --- 3. Step A: Fast Shortcuts (Zero Cost) ---
     cleaned = reply.lower()
