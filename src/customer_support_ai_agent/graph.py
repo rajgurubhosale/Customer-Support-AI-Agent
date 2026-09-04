@@ -1,6 +1,7 @@
 from langgraph.graph import START, END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 import os
+
 from customer_support_ai_agent.nodes import (
     entry_node,
     human_escalate_node,
@@ -41,6 +42,7 @@ graph.add_conditional_edges(
         "human_escalate": "human_escalate_node",
         "demo_node": "demo_node",
         "start": "start_node",
+        "end": END,
     },
 )
 
@@ -78,46 +80,70 @@ route_retry_exhausted, {
 from langgraph.types import Command
 
 
-
 def main():
     checkpointer = MemorySaver()
     app = graph.compile(checkpointer=checkpointer)
-
-    config = {"configurable": {"thread_id": "user-123"}}
-
-
-    # First call — starts the graph, runs until it hits the first interrupt()
+    
     user_id = int(input("Enter your user_id: "))
-    result = app.invoke(
-        {"user_id": user_id, "session_id": "session-123"},
-        config=config,
-    )
+
+    #thread_id = conversation identity
+    config = {"configurable": {"thread_id": f"user-{user_id}"}}
+
+    # First call: real starting state (not a Command yet)
+    next_input = {"user_id": user_id, "session_id": "session-123"}
 
     while True:
-        # Show any message the last node left behind (e.g. "you chose not to cancel")
-        messages = result.get("messages", [])
-        if messages:
-            print("\nAI:", messages[-1].content)
 
-        if "__interrupt__" not in result:
-            print("\nSession ended.")
+        prompt_question =  None
+
+        # first iteration: next_input = starting dict -> starts a NEW run
+        # it runs till the end or interrupt
+        for event in app.stream(next_input, config=config, stream_mode='updates'):
+
+            # 1. Print any AI messages nodes left on the belt
+            # this loops runs for yeild in genrator app.stream()
+            for node_name, node_output in event.items():
+                
+                # event exmaple: {"confirm_action_node": {"confirmed": False, "messages": [...]}}
+                if isinstance(node_output, dict) and "messages" in node_output:
+                    for msg in node_output["messages"]:
+                        print("\nAI:", msg.content)
+                        
+
+            # 2. Catch pause points (interrupts)
+            # {"__interrupt__": (Interrupt(value="Are you sure? (yes/no)"),)}
+
+            if "__interrupt__" in event:
+                prompt_question = event["__interrupt__"][0].value
+            
+        
+
+        # Graph reached the end without interrupting
+        if not prompt_question:
+            print("\nSession ended. Goodbye!")
             break
 
-        question = result["__interrupt__"][-1].value
-        print("\nAI:", question)
+        # Display the prompt and wait for user input
+        
+        print("\nAI:", prompt_question)
 
-        try:
-            user_input = input("You: ").strip()
-            if user_input.lower() in ("exit", "quit", "bye"):
+        try:    
+
+            user_reply = input("You: ").strip()        
+            if user_reply.lower() in ("exit", "quit", "bye"):
                 print("\nSession ended. Goodbye!")
                 break
-            if not user_input:
-                continue
+        
         except KeyboardInterrupt:
             print("\nSession ended. Goodbye!")
-            return
+            break
 
-        result = app.invoke(Command(resume=user_input), config=config)
+        # Next loop iteration resumes the graph with the user's answer
+        # "Don't start a new graph run. Instead, resume the paused thread 
+        # (identified by config's thread_id), and make user_reply be the return value of
+        #  whatever interrupt(...) call froze it."
+        next_input = Command(resume=user_reply)
+
 
 if __name__ == "__main__":
     main()
