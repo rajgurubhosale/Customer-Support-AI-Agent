@@ -73,7 +73,7 @@ def human_escalate_node(state: CustomerState) -> dict:
 ###################################################################################################
 
 
-from customer_support_ai_agent.db_functions import get_order
+from customer_support_ai_agent.db_functions import get_order_with_items
 
 
 def ask_for_order_id_return(state: CustomerState) -> dict:
@@ -84,7 +84,7 @@ def ask_for_order_id_return(state: CustomerState) -> dict:
     order_id = interrupt("Please enter your order ID:")
     order_id = order_id.strip().upper()
     
-    order_details = get_order(int(order_id), customer_id=int(user_id))
+    order_details = get_order_with_items(int(order_id), customer_id=int(user_id))
 
     if order_details is None:
         return {
@@ -106,12 +106,16 @@ def ask_for_confirmation_return_node(state: CustomerState) -> dict:
     """Asks user to confirm return before executing."""
     order_details = state["customer_details"]
     total_amount = order_details.get("total_amount")
-    
     refund_str = f"• Estimated Refund: ₹{total_amount}\n" if total_amount else ""
+
+    item_names = []
+    for item in order_details.get("items", []):
+        item_names.append(f"{item['product_name']} (x{item['quantity']})")
+    items_str = ", ".join(item_names) or "N/A"
 
     prompt_text = (
             f"You are about to request a return for Order #{state['order_id']}:\n\n"
-            f"• Item(s): {order_details['item_name']}\n"
+            f"• Item(s): {items_str}\n"
             f"{refund_str}"
             "Are you sure you want to initiate this return? (yes/no)\n\n"
             
@@ -256,15 +260,20 @@ def return_order_node(state: CustomerState) -> dict:
 #####################################################
 
 
-from customer_support_ai_agent.db_functions import get_order
-
+from customer_support_ai_agent.db_functions import get_order_with_items
 def ask_for_order_id_cancel(state: CustomerState) -> dict:
-    """First node in the cancel chain — asks for order ID, validates it exists."""
+    """Asks for order ID, displaying an error message if previous attempts failed."""
     user_id = state["user_id"]
     retries = state.get("retry_count", 0)
 
-    order_id = interrupt("Please enter your order ID:")
-    order_details = get_order(order_id.strip().upper(), customer_id=user_id)
+    # Show error prompt on retry, default prompt on first attempt
+    if retries > 0:
+        prompt = f"❌ We couldn't find that order. Please check and enter your Order ID again"
+    else:
+        prompt = "Please enter your order ID:"
+
+    order_id = interrupt(prompt).strip().upper()
+    order_details = get_order_with_items(order_id, customer_id=user_id)
 
     if order_details is None:
         return {
@@ -273,12 +282,11 @@ def ask_for_order_id_cancel(state: CustomerState) -> dict:
             "customer_details": None,
         }
 
-    else: 
-        return {
-            "retry_count": 0,
-            "order_id": order_id,
-            "customer_details": order_details,
-        }
+    return {
+        "retry_count": 0,
+        "order_id": order_id,
+        "customer_details": order_details,
+    }
 
 
 def retry_exhausted_node(state: CustomerState) -> dict:
@@ -294,45 +302,121 @@ def retry_exhausted_node(state: CustomerState) -> dict:
 
 
 def ask_for_confirmation_cancel_node(state: CustomerState) -> dict:
-    """Asks user to confirm cancellation before executing."""
-    order_details    = state["customer_details"]
+    """Lets user select an item or entire order, then asks for a final yes/no confirmation."""
+    order_details = state["customer_details"]
+    items = order_details.get("items", [])
     total_amount = order_details.get("total_amount")
-    refund_line = f"• Refund Amount: ₹{total_amount} (to original payment method)\n" if total_amount else ""
 
-    prompt_text = (
-        f"Order Summary for Cancellation:\n\n"
-        f"• Order ID: #{order_details['order_id']}\n"
-        f"• Item(s): {order_details['item_name']}\n"
-        f"• Current Status: {order_details['status']}\n"
-        f"{refund_line}\n"
-        "Are you sure you want to cancel this order? (yes/no)\n\n"
-        "• TYPE: 'yes' to confirm cancellation\n"
-        "• TYPE: 'no' to keep your order and return to the main menu"
+    # CASE 1: Only 1 item in the entire order -> Direct yes/no
+    if len(items) <= 1:
+        item_text = f"{items[0]['product_name']} (Qty: {items[0]['quantity']})" if items else "All items"
+        prompt = (
+            f"Order Summary for Cancellation:\n\n"
+            f"• Order ID: #{order_details['order_id']}\n"
+            f"• Item: {item_text}\n"
+            f"• Refund Amount: ₹{total_amount}\n\n"
+            "Are you sure you want to cancel this order? (yes/no)\n"
+            "• TYPE: 'yes' to cancel\n"
+            "• TYPE: 'no' to keep order and return to main menu"
+        )
+        reply = interrupt(prompt).strip().lower()
+        if reply in ("y", "yes"):
+            return {
+                "cancel_confirmed": True,
+                "context": {"cancel_scope": "all", "item_name": item_text, "refund": total_amount},
+            }
+        return {"cancel_confirmed": False}
+
+    # CASE 2: Multiple items -> Step 1: Choose item or ALL
+    item_lines = "\n".join(
+        f"[{idx + 1}] {item['product_name']} (Qty: {item['quantity']}, ₹{item['unit_price'] * item['quantity']})"
+        for idx, item in enumerate(items)
     )
 
-    reply = interrupt(prompt_text)
-    cancel_confirmed = reply.strip().lower() in ("y", "yes")
-    
-    if cancel_confirmed:
-        return {"cancel_confirmed": True}
+    selection_prompt = (
+        f"Order Summary for Cancellation:\n\n"
+        f"• Order ID: #{order_details['order_id']}\n"
+        f"• Current Status: {order_details['status']}\n\n"
+        f"Items in this order:\n{item_lines}\n\n"
+        "What would you like to cancel?\n"
+        "• TYPE: Item number (e.g. 1 or 2) to cancel just that item\n"
+        f"• TYPE: 'all' to cancel the ENTIRE order (₹{total_amount} refund)\n"
+        "• TYPE: 'no' to keep order and return to main menu"
+    )
 
+    reply = interrupt(selection_prompt).strip().lower()
+
+    if reply in ("n", "no", "exit", "back"):
+        return {"cancel_confirmed": False}
+
+    # Determine what was selected
+    if reply in ("all", "entire"):
+        selected_info = {"cancel_scope": "all", "item_name": "All Items", "refund": total_amount}
+    else:
+        try:
+            choice_idx = int(reply) - 1
+            if 0 <= choice_idx < len(items):
+                chosen = items[choice_idx]
+                refund = chosen["unit_price"] * chosen["quantity"]
+                selected_info = {
+                    "cancel_scope": "single",
+                    "order_item_id": chosen["order_item_id"],
+                    "item_name": f"{chosen['product_name']} (Qty: {chosen['quantity']})",
+                    "refund": refund,
+                }
+            else:
+                return {"cancel_confirmed": False}
+        except ValueError:
+            return {"cancel_confirmed": False}
+
+    # CASE 2 -> Step 2: Final yes/no confirmation showing chosen option
+    confirmation_prompt = (
+        f"You have selected to cancel:\n"
+        f"• Item: {selected_info['item_name']}\n"
+        f"• Refund Amount: ₹{selected_info['refund']}\n\n"
+        "Are you sure you want to confirm this cancellation? (yes/no)\n"
+        "• TYPE: 'yes' to cancel\n"
+        "• TYPE: 'no' to keep order and return to main menu"
+    )
+
+    confirm_reply = interrupt(confirmation_prompt).strip().lower()
+
+    if confirm_reply in ("y", "yes"):
+        return {
+            "cancel_confirmed": True,
+            "context": selected_info,
+        }
+
+    return {"cancel_confirmed": False}
+    
+# check cancel can happen and all here only if its placed then show it can be cancelled or if its deliverd
+# or something then show the return it something
+# if else should be here only not route direcltu 
+
+    
+def cancel_order_node(state: CustomerState) -> dict:
+    """Executes cancellation and displays what was cancelled."""
+    cancel_info = state.get("context") or {}
+    scope = cancel_info.get("cancel_scope", "all")
+    item_name = cancel_info.get("item_name", "Order")
+    refund = cancel_info.get("refund", 0)
+    # TODO: Execute DB Update (SQL query) using cancel_info
+    # if scope == "all": cancel entire order
+    # if scope == "single": cancel order_item_id only
+    msg = (
+        f"Cancellation Confirmed! ✅\n\n"
+        f"• Cancelled: {item_name}\n"
+        f"• Refund Initiated: ₹{refund}\n\n"
+        f"Redirecting you back to the main menu."
+    )
     return {
-        "cancel_confirmed": False,
-        "messages": [AIMessage(content=(
-            f"You've chosen not to cancel order #{order_details['order_id']}. "
-            "routing you back to the main menu."
-        ))],
+        "messages": [AIMessage(content=msg)],
+        "order_id": None,
+        "customer_details": None,
+        "cancel_confirmed": None,
+        "context": None,
     }
 
-    
-
-def cancel_order_node(state: CustomerState) -> dict:
-    print('ORDER CANCELLED')
-    msg = f"""
-            your order {state['order_id']} has been cancelled !
-            redirecting u to main menu !!
-        """
-    return {"messages": [AIMessage(content=msg)]}
     # then cancel and show the msg of cancellations
     # and update in db user data
 
