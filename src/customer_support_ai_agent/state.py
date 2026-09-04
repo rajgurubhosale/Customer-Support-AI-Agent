@@ -3,31 +3,18 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 class CustomerState(TypedDict, total=False):
-     #session identity
-     user_id: Optional[str]
-     session_id: Optional[str]
+    user_id: Optional[str]
+    session_id: Optional[str]
+    menu_choice: Optional[str]
+    action_type: Optional[Literal["cancel", "return", "faq", "escalate", "demo"]]
 
-     #top-level menu routing
-     menu_choice: Optional[str]
+    order_id: Optional[str]
+    customer_details: Optional[Dict[str, Any]]
+    retry_count: int
+    confirmed: Optional[bool]
+    policy_block_reason: Optional[str]
 
-     return_cancel_choice: Optional[str]
-
-     # blocked for the delivery is done and its more than  7 days we dont return order ask for the ticket
-     cancel_eligible: Optional[Literal["auto", "guided", "blocked"]]
-     
-     return_blocked_choice: Optional[str]
-     guided_choice: Optional[str]
-
-     retry_count: int                          
-     customer_details: Optional[Dict[str, Any]]
-     retry_exhausted_choice: Optional[str]   
-     
-     
-     cancel_confirmed: Optional[bool]
-     return_confirmed: Optional[bool]
-     
-     order_id: Optional[str]
-     context: Optional[Dict[str, Any]]
-     messages: Annotated[list[BaseMessage], add_messages]
-
+    retry_exhausted_choice: Optional[str]
+    context: Optional[Dict[str, Any]]
+    messages: Annotated[list[BaseMessage], add_messages]
 
