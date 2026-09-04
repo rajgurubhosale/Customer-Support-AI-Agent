@@ -14,6 +14,7 @@ db_pool = ConnectionPool(
     open=True,
 )
 
+
 def get_order_with_items(order_id: int, customer_id: int) -> Optional[dict]:
     """Safely fetch an order and its items. Returns None on not found or error."""
     try:

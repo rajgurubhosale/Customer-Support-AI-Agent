@@ -2,32 +2,71 @@ from  customer_support_ai_agent.state import CustomerState
 
 MAX_MENU_RETRIES = 3
 
-################ 
-
-# MAIN ROUTES
-
-############
-
+# UPDATED ROUTESS
 def route_menu(state: CustomerState) -> str:
-    """Deterministic routing off the menu choice. Falls back to re-asking
-    on unrecognized input, capped to avoid an infinite loop."""
+    action = state.get("action_type")
+    
+    if action == "cancel":
+        return "order_lookup"
+    elif action == "return":
+        return "order_lookup"
+    elif action == "escalate":
+        return "human_escalate" 
+    elif action == "demo":
+        return "demo_node"  
+    
+    return "start"
 
-    choice = state.get("menu_choice", "").strip().lower()
+from datetime import datetime, date
 
-    if choice in {"new chat", "restart", "reset"}:
-        return "reset_state"
+MAX_ORDER_RETRIES = 3
+RETURN_WINDOW_DAYS = 7
 
-    if choice in {"1", "general", "general chat", "faq"}:
-        return "general_inquiry"
 
-    if choice in {"2", "cancel", "return", "cancel order", "return order"}:
-        return "return_cancel_flow"
+def route_order_lookup(state: CustomerState) -> str:
+    """Routes directly to action-specific confirmation or blocked nodes."""
+    if state.get("retry_count", 0) >= MAX_ORDER_RETRIES:
+        return "retry_exhausted"
 
-    if choice in {"3", "product", "product enquiry", "product inquiry"}:
-        return "product_enquiry"
+    order = state.get("customer_details")
+    if not order:
+        return "retry"
 
-    # Any unrecognized input simply re-triggers the menu
-    return "start"  
+    status = order.get("status")
+    action = state.get("action_type")   
+
+    # Cancel Flow
+    if action == "cancel":
+        if status == "Placed":
+            return "eligible"
+        return "blocked"
+
+    # Return Flow
+    if action == "return":
+        delivery_date = order.get("delivery_date")
+        if status == "Delivered" and delivery_date:
+            d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
+            if (date.today() - d_date).days <= RETURN_WINDOW_DAYS:
+                return "eligible"
+        return "blocked"
+
+    return "blocked"
+
+
+def route_blocked_choice(state: CustomerState) -> str:
+    """Routes the user choice from policy_blocked_node."""
+    if state.get("blocked_choice") == "ticket":
+        return "human_escalate"
+    return "start"
+
+
+
+
+
+
+
+
+#####################################
 
 def route_return_or_cancel(state: CustomerState) -> str:
     choice = state.get("return_cancel_choice", "")
@@ -40,8 +79,6 @@ def route_return_or_cancel(state: CustomerState) -> str:
         return "start"
 
     return "retry"
-
-
 from datetime import datetime, date
 
 MAX_ORDER_RETRIES = 3

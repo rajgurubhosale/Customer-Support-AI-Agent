@@ -45,8 +45,7 @@ from customer_support_ai_agent.state import CustomerState
 
 graph = StateGraph(CustomerState)
 
-graph.add_node("start_node", start)
-graph.add_edge(START, "start_node")
+
 
 graph.add_node("return_cancel_flow_node", return_cancel_flow_ask)
 
@@ -75,21 +74,77 @@ graph.add_edge("human_escalate_node", END)
 #graph.add_edge("out_for_delivery_node_cancel", END)
 
 
+# LATEST 
+from customer_support_ai_agent.nodes import entry_node, order_lookup_node, demo_node
+from customer_support_ai_agent.routes import route_order_lookup
+
+graph.add_node("start_node", entry_node)
+graph.add_edge(START, "start_node")
+
+graph.add_node("order_lookup_node", order_lookup_node)
+graph.add_node("demo_node", demo_node)
+graph.add_edge("demo_node", "start_node")
 
 
 graph.add_conditional_edges(
     "start_node",
     route_menu,
     {   
-        # guide how to use it # returns small video of 2 min
-        #"reset_state": "reset_state",
-        #"general_inquiry": "general_inquiry",
-        "return_cancel_flow": "return_cancel_flow_node",
-        #"product_enquiry": "product_enquiry",
+        "order_lookup": "order_lookup_node",
         "human_escalate": "human_escalate_node",
-        "start":"start_node"
+        "demo_node": "demo_node",
+        "start": "start_node",
     },
 )
+from customer_support_ai_agent.nodes import confirm_action_node 
+
+graph.add_node("confirm_action_node", confirm_action_node)
+
+graph.add_conditional_edges(
+    "order_lookup_node",
+    route_order_lookup,
+    {
+        "retry": "order_lookup_node",
+        "retry_exhausted": "retry_exhausted_node",
+        "eligible": "confirm_action_node",
+        "blocked": "policy_blocked_node",
+    },
+)
+
+graph.add_edge("confirm_action_node", "start_node")
+
+from customer_support_ai_agent.nodes import policy_blocked_node
+from customer_support_ai_agent.routes import route_blocked_choice
+
+graph.add_node("policy_blocked_node", policy_blocked_node)
+
+graph.add_conditional_edges(
+    "policy_blocked_node",
+    route_blocked_choice,
+    {
+        "human_escalate": "human_escalate_node",
+        "start": "start_node",
+    },
+)
+
+
+graph.add_conditional_edges("retry_exhausted_node", route_retry_exhausted, {
+    "human_escalate": "human_escalate_node",
+    "start": "start_node",
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 graph.add_conditional_edges(
     "return_cancel_flow_node",
@@ -164,10 +219,6 @@ graph.add_conditional_edges("cancel_blocked_node", route_cancel_blocked, {
     "start": "start_node",
 })
 
-graph.add_conditional_edges("retry_exhausted_node", route_retry_exhausted, {
-    "human_escalate": "human_escalate_node",
-    "start": "start_node",
-})
 
 graph.add_conditional_edges(
     "ask_for_confirmation_cancel_node",
@@ -206,11 +257,14 @@ def main():
         config=config,
     )
 
+    last_printed_count = 0
     while True:
-        # Show any message the last node left behind (e.g. "you chose not to cancel")
+        # Show any NEW message the last node left behind
         messages = result.get("messages", [])
-        if messages:
-            print("\nAI:", messages[-1].content)
+        if len(messages) > last_printed_count:
+            for m in messages[last_printed_count:]:
+                print("\nAI:", m.content)
+            last_printed_count = len(messages)
 
         if "__interrupt__" not in result:
             print("\nSession ended.")
