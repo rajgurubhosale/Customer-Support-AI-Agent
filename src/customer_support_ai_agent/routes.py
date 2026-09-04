@@ -2,12 +2,17 @@ from  customer_support_ai_agent.state import CustomerState
 
 MAX_MENU_RETRIES = 3
 
+################ 
+
+# MAIN ROUTES
+
+############
+
 def route_menu(state: CustomerState) -> str:
     """Deterministic routing off the menu choice. Falls back to re-asking
     on unrecognized input, capped to avoid an infinite loop."""
 
     choice = state.get("menu_choice", "").strip().lower()
-    retries = state.get("menu_retry_count", 0)
 
     if choice in {"new chat", "restart", "reset"}:
         return "reset_state"
@@ -21,29 +26,89 @@ def route_menu(state: CustomerState) -> str:
     if choice in {"3", "product", "product enquiry", "product inquiry"}:
         return "product_enquiry"
 
-    # unrecognized input — retry or escalate
-    if retries + 1 >= MAX_MENU_RETRIES:
-        return "human_escalate"
-
-    return "start"  # loop back and re-show the menu
-    
+    # Any unrecognized input simply re-triggers the menu
+    return "start"  
 
 def route_return_or_cancel(state: CustomerState) -> str:
     choice = state.get("return_cancel_choice", "")
 
     if choice in {"1", "return", "return order"}:
-        return "return_order_node"
+        return "return_order"
     if choice in {"2", "cancel", "cancel order"}:
-        return "cancel_order_node"
+        return "cancel_order"
     if choice in {"3", "main menu", "menu", "back"}:
         return "start"
 
     return "retry"
 
 
+from datetime import datetime, date
+
 MAX_ORDER_RETRIES = 3
+RETURN_WINDOW_DAYS = 7
 CANCELLABLE_STATUSES = {"Placed"}
-GUIDED_STATUSES = {"Processing", "Shipped"}
+OUT_FOR_DELIVERY_STATUSES = {"Shipped"}
+
+####################
+# RETURN ROUTE
+####################
+
+def route_order_lookup_return(state: CustomerState) -> str:
+    """Runs right after ask_for_order_id_return — handles retry/escalate,
+    then classifies eligibility (Delivered within 7 days) if the order was found."""
+
+    if state.get("retry_count", 0) >= MAX_ORDER_RETRIES:
+        return "retry_exhausted"
+
+    if state.get("customer_details") is None:
+        return "retry"
+
+    order = state.get("customer_details") or {}
+    status = order.get("status")
+    delivery_date = order.get("delivery_date")
+
+    # Returns are only eligible for Delivered orders within 7 days
+    if status == "Delivered" and delivery_date:
+        d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
+        days_since = (date.today() - d_date).days
+        if days_since <= RETURN_WINDOW_DAYS:
+            return "ask_for_confirmation_return_node"
+        
+        # if days have passed for return 7 days has  been more
+        if days_since > RETURN_WINDOW_DAYS:
+            return "return_blocked_node"  
+
+    # in-transit orders  Shipped — not delivered yet
+    if status in OUT_FOR_DELIVERY_STATUSES:
+        return "out_for_delivery_node_return" 
+
+    # handle in this ndoe situations   ike if status is placed or Cancelled or Returned    
+    return "return_blocked_node"
+
+
+def route_return_blocked(state: CustomerState) -> str:
+    choice = state.get("return_blocked_choice", "")
+    if choice in {"1", "ticket", "human", "escalate"}:
+        return "human_escalate"
+    return "start"
+    
+
+def route_return_order(state: CustomerState) -> str:
+    
+    """Runs after ask_for_confirmation_node — branches to cancel_node if confirmed,
+    otherwise loops back to start (and clears relevant state fields)."""
+    
+    if state.get("return_confirmed"):
+        return "return_order"
+    else:
+        # clear the input field
+        return "start"
+
+
+##################
+# CANCEL ROUTE
+#####################
+
 
 def route_order_lookup_cancel(state: CustomerState) -> str:
     """Runs right after ask_for_order_id_cancel — handles retry/escalate,
@@ -52,28 +117,18 @@ def route_order_lookup_cancel(state: CustomerState) -> str:
     if state.get("retry_count", 0) >= MAX_ORDER_RETRIES:
         return "retry_exhausted"
 
-    if state.get("order_id") is None:
+    if state.get("customer_details") is None:
         return "retry"
 
     status = state["customer_details"]["status"]
     
     # DONE
     if status in CANCELLABLE_STATUSES:
-        return "ask_for_confirmation_node"
+        return "ask_for_confirmation_cancel_node"
 
-    # REMAINMING
+    if status in OUT_FOR_DELIVERY_STATUSES:
+        return "out_for_delivery_node_cancel"
     
-    # if in delivered status #  with the actual date is like something this if
-    #  todays date is +7 then delivered data
-    # then just print the info  that it cannot be cancelled 
-    # 2 options that is the create ticket or back to main menu  
-
-
-    if status in GUIDED_STATUSES:
-        return "guided_return_options_node"
-    # blocked node that means if order cannot be cancelled ? if the order if the days have 
-    # been more than the 7 days? in that case 
-
     return "cancel_blocked_node"
 
 
@@ -111,7 +166,7 @@ def route_cancel_order(state: CustomerState) -> str:
     """Runs after ask_for_confirmation_node — branches to cancel_node if confirmed,
     otherwise loops back to start (and clears relevant state fields)."""
     
-    if state.get("confirmed"):
+    if state.get("cancel_confirmed"):
         return "cancel_order"
     else:
         # clear the input field
