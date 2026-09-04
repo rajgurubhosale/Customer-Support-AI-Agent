@@ -1,5 +1,17 @@
+
+####################################################################################################
+
+# human platform should get to see the ticket thats should be implemented then handle this later
+
+####################################################################################################
+
+
+
 # IMP 
 # THE CONFIRM ACTION NODE IS FOR TEMP WILL CHANGES OR UPDATE IN UI CODE
+# BREAK CONFIRM CODE INTO RETURN NODE AND CANCEL NODE LAST ASK FIRST INTERRUPT CONFIRM AND 
+# USE ROUTE TO ROUTE TO THEM FROM CONFIRM CODE LAST
+
 # BlockedOptionClassifier WRITE PROPER IN SCHEMASS.py
 
 
