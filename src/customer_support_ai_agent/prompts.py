@@ -1,9 +1,4 @@
 
-INITIAL_GREETING = (
-        f"Hi! What can I help you with today?\n"
-        "1. General chat (FAQ, policies, order status)\n"
-        "2. Cancel or return an order\n"
-        "3. Product enquiry\n"    )
 
 START_NODE_INTENT_SYSTEM_PROMPT = """You are a strict customer support intent classifier.
 Classify the user message into exactly one category:

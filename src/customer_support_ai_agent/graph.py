@@ -54,6 +54,7 @@ graph.add_conditional_edges(
         "retry_exhausted": "retry_exhausted_node",
         "eligible": "confirm_action_node",
         "blocked": "policy_blocked_node",
+        "start": "start_node",
     },
 )
 
@@ -72,6 +73,7 @@ route_blocked_choice,
 
 graph.add_conditional_edges("retry_exhausted_node", 
 route_retry_exhausted, {
+    "retry": "order_lookup_node",
     "human_escalate": "human_escalate_node",
     "start": "start_node",
 })

@@ -4,6 +4,18 @@
 # human platform should get to see the ticket thats should be implemented then handle this later
 
 ####################################################################################################
+# ADD REFUND STATUS IN DB
+# DEFAULT NULL
+
+On Cancel / Return Request: Set to 'Processing' (or 'Pending').
+
+When Bank Credits Funds: Updated to 'Completed'.
+
+If Bank Rejects: Updated to 'Failed'. RAISE HUMAN TICKET
+
+# SHOULD BE AN OPTIONS THERE FOR THE CHECK ORDER ALSO
+
+
 
 
 

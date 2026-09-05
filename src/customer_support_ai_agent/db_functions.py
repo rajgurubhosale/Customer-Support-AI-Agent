@@ -56,6 +56,9 @@ def get_order_history(customer_id: int) -> Optional[list[dict]]:
     ''' return customer order history'''
     with db_pool.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM orders WHERE customer_id = %s", (customer_id,))
+            cur.execute(
+                "SELECT * FROM orders WHERE customer_id = %s ORDER BY order_date DESC LIMIT 5",
+                (customer_id,),
+            )
             return cur.fetchall()
 
