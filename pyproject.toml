@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "asttokens>=3.0.2",
     "faker>=40.37.0",
+    "fastapi[standard]>=0.141.1",
     "grandalf>=0.8",
     "ipykernel>=7.3.0",
     "langchain-core>=1.6.0",
@@ -20,6 +21,9 @@ dependencies = [
     "psycopg2-binary>=2.9.12",
     "psycopg[binary,pool]>=3.3.4",
     "python-dotenv>=1.2.3",
+    "requests>=2.34.2",
+    "streamlit>=1.63.0",
+    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
