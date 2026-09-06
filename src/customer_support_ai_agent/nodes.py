@@ -21,13 +21,12 @@ structured_llm = model.with_structured_output(IntentClassifier)
 # 2. Inside entry_node:
 def entry_node(state: CustomerState) -> dict:
     prompt = (
-        "Hi! How can I help you today?\n\n"
-        "TYPE: 1 -> Policy FAQ & General Inquiries\n"
-        "TYPE: 2 -> Cancel an Order\n"
-        "TYPE: 3 -> Return an Order\n"
-        "TYPE: 4 -> Talk to Human / Support Ticket\n"
-        "TYPE: 5 -> Demo Video\n\n"
-        "(You can also type naturally with your Order ID, e.g. 'cancel ORD-15')"
+        "**Hi! How can I help you today?**\n\n"
+        "- **1** -> Policy FAQ & General Inquiries\n"
+        "- **2** -> Cancel an Order\n"
+        "- **3** -> Return an Order\n"
+        "- **4** -> Talk to Human / Support Ticket\n\n"
+        "*(You can also type naturally with your Order ID, e.g. `cancel ORD-15`)*"
     )
     user_input = interrupt(prompt).strip().lower()
 
@@ -44,8 +43,6 @@ def entry_node(state: CustomerState) -> dict:
         action_type = "return_order"
     elif user_input in ("4", "ticket", "human", "agent"):
         action_type = "human_support"
-    elif user_input in ("5", "demo", "video"):
-        action_type = "demo"
     elif user_input in ("no", "nothing", "bye", "exit", "quit", "done", "nope"):
         return {
             "menu_choice": user_input,
@@ -80,14 +77,15 @@ def entry_node(state: CustomerState) -> dict:
 
 
 
-def demo_node(state: CustomerState) -> dict:
+def faq_node(state: CustomerState) -> dict:
     # prompt = (
     #     "🎥 [Demo Video]: You can view our quick walkthrough demo at https://example.com/demo\n"
     #     "Press Enter or type any message to return to the main menu."
     # )
     # interrupt(prompt)
     # return {}
-    return {"messages": [AIMessage(content="Demo video — placeholder")]}
+    return {"messages": [AIMessage(content="Faq Node— placeholder")]}
+
 
 
 
@@ -105,7 +103,7 @@ def order_lookup_node(state: CustomerState) -> dict:
         if retries > 0:
             prompt = (
                 f"❌ We couldn't find that order. Please check and enter your Order ID in format ORD-XX "
-                f"(Attempt {retries + 1}/3):\n(Or type 'menu' to return to the main menu)"
+                f"(Attempt {retries + 1}/3):\n\n*(Or type `'menu'` to return to the main menu)*"
             )
         else:
             all_recent = get_order_history(user_id) or []
@@ -138,11 +136,12 @@ def order_lookup_node(state: CustomerState) -> dict:
                     o_id = o.get("order_id")
                     o_status = o.get("status", "")
                     o_amt = o.get("total_amount", 0)
-                    orders_list.append(f"  [{idx}] ORD-{o_id} (₹{o_amt}, Status: {o_status})")
-                orders_snippet = f"\n\n{header_title}\n" + "\n".join(orders_list) + "\n\n"
+                    orders_list.append(f"- **[{idx}] ORD-{o_id}** — ₹{o_amt} (`{o_status}`)")
+
+                orders_snippet = f"\n\n**{header_title}**\n" + "\n".join(orders_list) + "\n\n"
                 selection_hint = (
-                    f"• TYPE: Number (1 to {len(displayed_orders)}) to select an order above, OR enter ORD-XX:\n"
-                    f"(Or type 'menu' to return to the main menu)"
+                    f"👉 **Type a number (1 to {len(displayed_orders)})** or enter your **Order ID** (e.g. `ORD-{displayed_orders[0].get('order_id')}`):\n\n"
+                    f"*(Or type `'menu'` to return to the main menu)*"
                 )
                 prompt = f"Sure, I can help you {action_text}.{orders_snippet}{selection_hint}"
             else:
@@ -153,8 +152,9 @@ def order_lookup_node(state: CustomerState) -> dict:
 
                 prompt = (
                     f"Sure, I can help you {action_text}.\n\n"
-                    f"ℹ️ You have no recent orders eligible for {reason_text}.\n\n"
-                    f"Please enter your Order ID in format ORD-XX (e.g. ORD-15) if you wish to check another order, or type 'menu' to go back:"
+                    f"ℹ️ **You have no recent orders eligible for {reason_text}.**\n\n"
+                    f"👉 Please enter your **Order ID** in format `ORD-XX` (e.g. `ORD-15`) if you wish to check another order:\n\n"
+                    f"*(Or type `'menu'` to go back)*"
                 )
 
         user_input = interrupt(prompt).strip().upper()
@@ -245,12 +245,12 @@ def confirm_action_node(state: CustomerState) -> dict:
         # Subcase 1A: Quantity is exactly 1 -> Direct yes/no prompt
         if max_qty <= 1:
             prompt = (
-                f"📋 Order Summary for {action_noun} (Order #{order_id}):\n\n"
-                f"• Item: {item_name} (Qty: 1)\n"
-                f"• Estimated Refund: ₹{total_amount}\n\n"
-                f"Are you sure you want to {action_verb} this order?\n"
-                f"• TYPE: 'yes' (or 1) to confirm\n"
-                f"• TYPE: 'no' (or 2) to keep your order and return to the main menu"
+                f"**📋 Order Summary for {action_noun} (Order #{order_id}):**\n\n"
+                f"- **Item**: {item_name} (Qty: 1)\n"
+                f"- **Estimated Refund**: ₹{total_amount}\n\n"
+                f"**Are you sure you want to {action_verb} this order?**\n\n"
+                f"- **1** -> Yes, confirm\n"
+                f"- **2** -> No, keep order and return to main menu"
             )
             reply = interrupt(prompt).strip().lower()
             if reply in ("y", "yes", "1", "confirm", "sure"):
@@ -273,13 +273,13 @@ def confirm_action_node(state: CustomerState) -> dict:
 
         # Subcase 1B: Single line item, but Quantity > 1 (e.g. 3 T-shirts)
         qty_prompt = (
-            f"📋 Order Summary for {action_noun} (Order #{order_id}):\n\n"
-            f"• Item: {item_name}\n"
-            f"• Ordered Quantity: {max_qty} (₹{unit_price} each | Total: ₹{total_amount})\n\n"
-            f"How many would you like to {action_verb}?\n"
-            f"• TYPE: Quantity number (1 to {max_qty})\n"
-            f"• TYPE: 'all' to {action_verb} all {max_qty} items (₹{total_amount} refund)\n"
-            f"• TYPE: 'no' to return to the main menu"
+            f"**📋 Order Summary for {action_noun} (Order #{order_id}):**\n\n"
+            f"- **Item**: {item_name}\n"
+            f"- **Ordered Quantity**: {max_qty} (₹{unit_price} each | Total: ₹{total_amount})\n\n"
+            f"**How many would you like to {action_verb}?**\n\n"
+            f"- Type a quantity number (1 to {max_qty})\n"
+            f"- Type `'all'` to {action_verb} all {max_qty} items (₹{total_amount} refund)\n"
+            f"- Type `'no'` to return to the main menu"
         )
         qty_reply = interrupt(qty_prompt).strip().lower()
         if qty_reply in ("n", "no", "back", "exit"):
@@ -305,9 +305,9 @@ def confirm_action_node(state: CustomerState) -> dict:
 
         # Final Confirmation
         confirm_reply = interrupt(
-            f"Confirm {action_noun} for {target_qty}x {item_name} (Refund: ₹{refund_calc})?\n"
-            f"• TYPE: 'yes' (or 1) to confirm\n"
-            f"• TYPE: 'no' (or 2) to cancel and return to main menu"
+            f"**Confirm {action_noun} for {target_qty}x {item_name} (Refund: ₹{refund_calc})?**\n\n"
+            f"- **1** -> Yes, confirm\n"
+            f"- **2** -> No, cancel and return to main menu"
         ).strip().lower()
         if confirm_reply in ("y", "yes", "1", "confirm", "sure"):
             note = (
@@ -332,16 +332,16 @@ def confirm_action_node(state: CustomerState) -> dict:
     # CASE 2: Multiple items in the order
     # -------------------------------------------------------------
     item_lines = "\n".join(
-        f"[{idx + 1}] {it['product_name']} (Qty: {it['quantity']}, ₹{it['unit_price'] * it['quantity']})"
+        f"- **[{idx + 1}]** {it['product_name']} — Qty: {it['quantity']}, ₹{it['unit_price'] * it['quantity']:.2f}"
         for idx, it in enumerate(active_items)
     )
     selection_prompt = (
-        f"📋 Items in Order #{order_id}:\n\n"
+        f"**📋 Items in Order #{order_id}:**\n\n"
         f"{item_lines}\n\n"
-        f"What would you like to {action_verb}?\n"
-        f"• TYPE: Item number (e.g. 1 or 2) to select a specific item\n"
-        f"• TYPE: 'all' to {action_verb} the ENTIRE order (Total Refund: ₹{total_amount})\n"
-        f"• TYPE: 'no' to return to the main menu"
+        f"**What would you like to {action_verb}?**\n\n"
+        f"- Type an **Item number** (e.g. `1` or `2`) to select a specific item\n"
+        f"- Type `'all'` to {action_verb} the **ENTIRE order** (Total Refund: ₹{total_amount:.2f})\n"
+        f"- Type `'no'` to return to the main menu"
     )
     reply = interrupt(selection_prompt).strip().lower()
 
@@ -357,9 +357,9 @@ def confirm_action_node(state: CustomerState) -> dict:
     # If user wants to cancel/return the ENTIRE order:
     if reply in ("all", "entire"):
         final_confirm = interrupt(
-            f"Are you sure you want to {action_verb} ALL items in Order #{order_id} for a full refund of ₹{total_amount}?\n"
-            f"• TYPE: 'yes' (or 1) to confirm\n"
-            f"• TYPE: 'no' (or 2) to return to main menu"
+            f"**Are you sure you want to {action_verb} ALL items in Order #{order_id} for a full refund of ₹{total_amount:.2f}?**\n\n"
+            f"- **1** -> Yes, confirm\n"
+            f"- **2** -> No, return to main menu"
         ).strip().lower()
         if final_confirm in ("y", "yes", "1", "confirm", "sure"):
             note = (
@@ -396,11 +396,11 @@ def confirm_action_node(state: CustomerState) -> dict:
     # If the chosen item has quantity > 1, ask how many units to cancel/return
     if max_qty > 1:
         qty_sub_prompt = (
-            f"You selected: {item_name} (Ordered: {max_qty}, ₹{unit_price} each)\n\n"
-            f"How many would you like to {action_verb}?\n"
-            f"• TYPE: Quantity (1 to {max_qty})\n"
-            f"• TYPE: 'all' to {action_verb} all {max_qty}\n"
-            f"• TYPE: 'no' to cancel"
+            f"**You selected:** {item_name} (Ordered: {max_qty}, ₹{unit_price} each)\n\n"
+            f"**How many would you like to {action_verb}?**\n\n"
+            f"- Type a quantity number (1 to {max_qty})\n"
+            f"- Type `'all'` to {action_verb} all {max_qty}\n"
+            f"- Type `'no'` to cancel and return to main menu"
         )
         sub_qty_reply = interrupt(qty_sub_prompt).strip().lower()
         if sub_qty_reply in ("n", "no", "back", "exit"):
@@ -422,12 +422,12 @@ def confirm_action_node(state: CustomerState) -> dict:
 
     # Final Step: Explicit Yes/No confirmation
     final_prompt = (
-        f"Confirm {action_noun} Summary:\n"
-        f"• Item: {target_qty}x {item_name}\n"
-        f"• Estimated Refund: ₹{refund_calc}\n\n"
-        f"Proceed with this {action_verb}?\n"
-        f"• TYPE: 'yes' (or 1) to confirm\n"
-        f"• TYPE: 'no' (or 2) to cancel and return to main menu"
+        f"**Confirm {action_noun} Summary:**\n\n"
+        f"- **Item**: {target_qty}x {item_name}\n"
+        f"- **Estimated Refund**: ₹{refund_calc:.2f}\n\n"
+        f"**Proceed with this {action_verb}?**\n\n"
+        f"- **1** -> Yes, confirm\n"
+        f"- **2** -> No, cancel and return to main menu"
     )
     final_reply = interrupt(final_prompt).strip().lower()
     if final_reply in ("y", "yes", "1", "confirm", "sure", "proceed"):
@@ -543,11 +543,11 @@ def policy_blocked_node(state: CustomerState) -> dict:
 
     # --- 2. Prompt Customer ---
     reply = interrupt(
-        f"❌ Policy Notice:\n{msg}\n\n"
-        "How would you like to proceed?\n"
-        "TYPE: 1 -> Raise a support ticket / Talk to an agent\n"
-        "TYPE: 2 -> Return to Main Menu\n"
-        "(Or simply type your question/complaint)"
+        f"❌ **Policy Notice:**\n{msg}\n\n"
+        "**How would you like to proceed?**\n\n"
+        "- **1** -> Raise a support ticket / Talk to an agent\n"
+        "- **2** -> Return to Main Menu\n\n"
+        "*(Or simply type your question/complaint)*"
     ).strip()
 
 
@@ -584,12 +584,12 @@ def retry_exhausted_node(state: CustomerState) -> dict:
     """Runs after MAX_ORDER_RETRIES failed order lookups.
     Provides options to retry entering order ID, return to main menu, or raise a support ticket."""
     prompt = (
-        "⚠️ We couldn't locate that order after 3 attempts.\n\n"
-        "How would you like to proceed?\n"
-        "• TYPE: 1 -> Try entering Order ID again\n"
-        "• TYPE: 2 -> Return to the main menu\n"
-        "• TYPE: 3 -> Raise a support ticket (our team will reach out within 24 hours)\n"
-        "(Or type your message directly)"
+        "⚠️ **We couldn't locate that order after 3 attempts.**\n\n"
+        "**How would you like to proceed?**\n\n"
+        "- **1** -> Try entering Order ID again\n"
+        "- **2** -> Return to the main menu\n"
+        "- **3** -> Raise a support ticket (our team will reach out within 24 hours)\n\n"
+        "*(Or type your message directly)*"
     )
     reply = interrupt(prompt).strip()
 

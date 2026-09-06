@@ -5,11 +5,11 @@ import os
 from customer_support_ai_agent.nodes import (
     entry_node,
     human_escalate_node,
-    demo_node,
     order_lookup_node,
     policy_blocked_node,
     confirm_action_node,
     retry_exhausted_node,
+    faq_node
 )
 from customer_support_ai_agent.routes import (
     route_menu,
@@ -22,16 +22,15 @@ graph = StateGraph(CustomerState)
 
 # 1. Register Active Nodes
 graph.add_node("start_node", entry_node)
-graph.add_node("demo_node", demo_node)
 graph.add_node("order_lookup_node", order_lookup_node)
 graph.add_node("policy_blocked_node", policy_blocked_node)
 graph.add_node("confirm_action_node", confirm_action_node)
 graph.add_node("retry_exhausted_node", retry_exhausted_node)
 graph.add_node("human_escalate_node", human_escalate_node)
+graph.add_node("faq_node", faq_node)
 
 # 2. Register Simple Edges
 graph.add_edge(START, "start_node")
-graph.add_edge("demo_node", "start_node")
 
 
 graph.add_conditional_edges(
@@ -40,7 +39,7 @@ graph.add_conditional_edges(
     {   
         "order_lookup": "order_lookup_node",
         "human_escalate": "human_escalate_node",
-        "demo_node": "demo_node",
+        "faq_node": "faq_node",
         "start": "start_node",
         "end": END,
     },
@@ -59,6 +58,7 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("confirm_action_node", "start_node")
+graph.add_edge("faq_node", "start_node")
 
 
 

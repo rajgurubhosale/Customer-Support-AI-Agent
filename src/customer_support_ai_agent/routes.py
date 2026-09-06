@@ -18,10 +18,10 @@ def route_menu(state: CustomerState) -> str:
         return "order_lookup"
     elif action == "human_support":
         return "human_escalate" 
-    elif action == "demo":
-        return "demo_node"  
     elif action == "exit":
         return "end"
+    elif action == 'faq':
+        return 'faq'
     elif action == "unclear":
         return "start"
     
