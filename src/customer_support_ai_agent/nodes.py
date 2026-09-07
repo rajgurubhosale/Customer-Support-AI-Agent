@@ -18,17 +18,22 @@ from customer_support_ai_agent.schemas import IntentClassifier
 
 structured_llm = model.with_structured_output(IntentClassifier)
 
-# 2. Inside entry_node:
+# 2. Inside entry_node
 def entry_node(state: CustomerState) -> dict:
-    prompt = (
-        "**Hi! How can I help you today?**\n\n"
-        "- **1** -> Policy FAQ & General Inquiries\n"
-        "- **2** -> Cancel an Order\n"
-        "- **3** -> Return an Order\n"
-        "- **4** -> Talk to Human / Support Ticket\n\n"
-        "*(You can also type naturally with your Order ID, e.g. `cancel ORD-15`)*"
-    )
-    user_input = interrupt(prompt).strip().lower()
+    raw_input = interrupt({
+        "prompt": (
+            "**Hi! How can I help you today?**\n\n"
+            "*(You can also type naturally with your Order ID, e.g. `cancel ORD-15`)*"
+        ),
+        "options": [
+            {"label": "📖 Policy FAQ & Inquiries", "value": "faq"},
+            {"label": "❌ Cancel an Order", "value": "cancel_order"},
+            {"label": "📦 Return an Order", "value": "return_order"},
+            {"label": "💬 Talk to Human / Ticket", "value": "human_support"},
+        ]
+    })
+
+    user_input = str(raw_input or "").strip().lower()
 
     # Step A: Deterministic Regex for Order ID (Accepts ORD-15, ORD15, ord-15, ord15)
     id_match = re.search(r'ord-?(\d+)', user_input)
@@ -37,11 +42,11 @@ def entry_node(state: CustomerState) -> dict:
     # Step B: Fast Shortcuts (Zero Cost)
     if user_input in ("1", "faq", "policy"):
         action_type = "faq"
-    elif user_input in ("2", "cancel"):
+    elif user_input in ("2", "cancel", "cancel_order"):
         action_type = "cancel_order"
-    elif user_input in ("3", "return"):
+    elif user_input in ("3", "return", "return_order"):
         action_type = "return_order"
-    elif user_input in ("4", "ticket", "human", "agent"):
+    elif user_input in ("4", "ticket", "human", "agent", "human_support"):
         action_type = "human_support"
     elif user_input in ("no", "nothing", "bye", "exit", "quit", "done", "nope"):
         return {
@@ -74,6 +79,8 @@ def entry_node(state: CustomerState) -> dict:
         "policy_block_reason": None,
         "context": None,
     }
+
+    
 
 
 
@@ -114,6 +121,12 @@ def order_lookup_node(state: CustomerState) -> dict:
                     o for o in all_recent
                     if o.get("status") in ("Placed", "Processing", "Partially_Cancelled")
                 ]
+
+
+
+#now hey i wnat u to make changes in the nodes !! here is there are too hard core code we had written for the cli and all because we had used  basically wrtoe the if else for everu situation can occur in the confirmation node !! like select 2 -3 what if we create a ui like that i mean it lets us show
+
+
                 header_title = "📦 Orders Eligible for Cancellation:"
             elif action == "return_order":
                 eligible_orders = []

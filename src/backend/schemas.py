@@ -37,3 +37,7 @@ class ChatResponse(BaseModel):
         default=None,
         description="Active order ID being processed, if any.",
     )
+    options: Optional[List[Dict[str, str]]] = Field(
+        default_factory=list,
+        description="List of clickable quick options for the user (e.g. [{'label': 'Cancel', 'value': '2'}]).",
+    )

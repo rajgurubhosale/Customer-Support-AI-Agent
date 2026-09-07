@@ -68,11 +68,21 @@ def execute_agent_turn(
     # Get latest graph state
     current_state = agent.get_state(config).values or {}
 
+    # Unpack prompt and clickable options if interrupt returned a dict
+    options = []
+    if isinstance(question, dict):
+        ai_response = question.get("prompt") or question.get("message") or ""
+        options = question.get("options", [])
+    elif question:
+        ai_response = str(question)
+    else:
+        ai_response = "Session ended. Thank you for reaching out! 👋"
+
     return {
         "thread_id": thread_id,
         "user_id": user_id,
         "status": "waiting_for_input" if question else "completed",
-        "ai_response": question or "Session ended. Thank you for reaching out! 👋",
+        "ai_response": ai_response,
         "messages": all_messages,
         "current_action": current_state.get("action_type"),
         "order_id": (
@@ -80,4 +90,5 @@ def execute_agent_turn(
             if current_state.get("order_id")
             else None
         ),
+        "options": options,
     }

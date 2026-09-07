@@ -45,6 +45,9 @@ graph.add_conditional_edges(
     },
 )
 
+graph.add_edge("faq_node","start_node")
+
+
 graph.add_conditional_edges(
     "order_lookup_node",
     route_order_lookup,
