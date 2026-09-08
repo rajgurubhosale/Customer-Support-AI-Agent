@@ -21,11 +21,25 @@ def route_menu(state: CustomerState) -> str:
     elif action == "exit":
         return "end"
     elif action == 'faq':
-        return 'faq'
+        return 'faq_node'
     elif action == "unclear":
         return "start"
     
     return "start"
+
+
+def route_faq(state: CustomerState) -> str:
+    """Routes from faq_node: continues chat loop, exits to menu, or hands off to actions."""
+    action = state.get("action_type")
+    if action == "cancel_order":
+        return "order_lookup"
+    elif action == "return_order":
+        return "order_lookup"
+    elif action == "human_support":
+        return "human_escalate"
+    elif action == "exit_to_menu":
+        return "start"
+    return "faq_node"
 
 
 def route_order_lookup(state: CustomerState) -> str:

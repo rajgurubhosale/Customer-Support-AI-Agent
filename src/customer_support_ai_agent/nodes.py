@@ -1,5 +1,7 @@
 
-from langchain_core.messages import AIMessage
+from functools import lru_cache
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.types import interrupt
 from customer_support_ai_agent.state import CustomerState
 from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history
@@ -10,7 +12,8 @@ MAX_MENU_RETRIES = 3
 
 
 import re
-from customer_support_ai_agent.prompts import START_NODE_INTENT_SYSTEM_PROMPT
+import json
+from customer_support_ai_agent.prompts import START_NODE_INTENT_SYSTEM_PROMPT, FAQ_SYSTEM_PROMPT
 from customer_support_ai_agent.model import model
 from customer_support_ai_agent.schemas import IntentClassifier
 
@@ -80,28 +83,117 @@ def entry_node(state: CustomerState) -> dict:
         "context": None,
     }
 
-    
+
+
+"""
+- One extra tool, `signal_intent`, lets the LLM itself decide when the user
+  is clearly asking to cancel/return/talk-to-human/go-to-menu vs. just asking
+  a policy question. The graph routes based on that — buttons are the job of
+  whatever node action_type points to, not this one.
+- Node just: get user message -> call model with tools -> either hand off
+  (intent) or answer conversationally.
+"""
+
+
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.types import interrupt
+from customer_support_ai_agent.tools import make_tools
+
+from pathlib import Path
+# LOAD AND KEEP THE PATH INSIDE THE API AFTER THE USER CLICKS ON THE FaQ NODE AND KEEP THERE
+@lru_cache(maxsize=1)
+def load_policy_files() -> str:
+    policy_path = Path(__file__).resolve().parents[2] / "docs" / "cancellation_and_return_policy.md"
+    return policy_path.read_text(encoding="utf-8")
 
 
 
 def faq_node(state: CustomerState) -> dict:
-    # prompt = (
-    #     "🎥 [Demo Video]: You can view our quick walkthrough demo at https://example.com/demo\n"
-    #     "Press Enter or type any message to return to the main menu."
-    # )
-    # interrupt(prompt)
-    # return {}
-    return {"messages": [AIMessage(content="Faq Node— placeholder")]}
+    """Conversational policy & order assistant with LLM-driven intent handoff."""
+    user_id = int(state.get("user_id") or 1)
+
+    # 1. Prompt for current turn: friendly greeting on first entry, or the AI's previous answer
+    prompt = state.get("faq_prompt") or "Hi! How can I help you today? Feel free to ask about our store policies or check your orders."
+
+    # Exactly ONE interrupt per turn: displays the prompt and receives user input
+    raw = interrupt({
+        "prompt": prompt,
+        "options": [{"label": "🏠 Return to Main Menu", "value": "menu"}]
+    })
+    user_msg = str(raw or "").strip()
+
+    # 2. Fast exit to menu
+    if user_msg.lower() in ("menu", "back", "exit", "main menu"):
+        return {
+            "action_type": "exit_to_menu",
+            "faq_prompt": None,
+            "menu_choice": None,
+            "messages": [AIMessage(content="Returned to Main Menu.")],
+        }
+
+    tools = make_tools(user_id)
+    tool_map = {t.name: t for t in tools}
+    model_with_tools = model.bind_tools(tools)
+
+
+    messages = [
+        SystemMessage(content=FAQ_SYSTEM_PROMPT.format(store_policies=load_policy_files())),
+        HumanMessage(content=user_msg),
+    ]
+
+    try:
+        ai_msg = model_with_tools.invoke(messages)
+    except Exception as e:
+        print(f"FAQ Agent error: {e}")
+        ai_msg = AIMessage(content="I can help with orders, cancellations, returns, and refunds. Could you rephrase your question?")
+
+    # 3. Intent handoff takes priority (when user asks to cancel/return/human/menu)
+    for tc in getattr(ai_msg, "tool_calls", None) or []:
+        if tc["name"] == "signal_intent":
+            args = tc["args"]
+            intent = args.get("intent", "faq")
+            raw_oid = args.get("order_id")
+            if not raw_oid:
+                m = re.search(r'ord-?(\d+)', user_msg, re.IGNORECASE) or re.search(r'order\s*#?\s*(\d+)', user_msg, re.IGNORECASE)
+                raw_oid = m.group(1) if m else None
+            order_id = re.sub(r'[^\d]', '', str(raw_oid)) if raw_oid else None
+            return {
+                "action_type": intent,
+                "order_id": order_id,
+                "faq_prompt": None,
+                "menu_choice": None,
+                "messages": [AIMessage(content=f"Got it, let's {intent.replace('_', ' ')}.")],
+            }
+
+    # 4. Resolve data lookup tool calls (get_recent_orders, get_order_details)
+    if getattr(ai_msg, "tool_calls", None):
+        messages.append(ai_msg)
+        for tc in ai_msg.tool_calls:
+            func = tool_map.get(tc["name"])
+            result = func.invoke(tc["args"]) if func else "Tool not found"
+            messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+        answer = model.invoke(messages).content
+    else:
+        answer = ai_msg.content
+
+    # 5. Save answer as next turn's prompt and loop back to faq_node
+    return {
+        "action_type": "faq",
+        "faq_prompt": answer,
+        "menu_choice": None,
+    }
+
 
 
 
 
 def order_lookup_node(state: CustomerState) -> dict:
-    """Fetches order. If order_id is missing, prompts user. Loops via router if not found."""
+    """Fetches order. If order_id is missing, prompts user with structured order options. Loops via router if not found."""
     user_id = state["user_id"]
     retries = state.get("retry_count", 0)
     order_id = state.get("order_id")
     action = state.get("action_type")
+    action_verb = "cancel" if action == "cancel_order" else "return"
     action_text = "cancel your order" if action == "cancel_order" else "request a return"
 
     # 1. Only prompt if we don't have an order_id yet
@@ -109,9 +201,18 @@ def order_lookup_node(state: CustomerState) -> dict:
         eligible_orders = []
         if retries > 0:
             prompt = (
-                f"❌ We couldn't find that order. Please check and enter your Order ID in format ORD-XX "
-                f"(Attempt {retries + 1}/3):\n\n*(Or type `'menu'` to return to the main menu)*"
+                f"❌ We couldn't find that order. Please check and enter your Order ID in format `ORD-XX` "
+                f"(Attempt {retries + 1}/3):\n\n*(Or select an option below)*"
             )
+            payload = {
+                "type": "order_selection",
+                "prompt": prompt,
+                "orders": [],
+                "options": [
+                    {"label": "🔙 Back to Main Menu", "value": "menu"},
+                    {"label": "💬 Talk to Human / Ticket", "value": "ticket"},
+                ]
+            }
         else:
             all_recent = get_order_history(user_id) or []
 
@@ -121,12 +222,6 @@ def order_lookup_node(state: CustomerState) -> dict:
                     o for o in all_recent
                     if o.get("status") in ("Placed", "Processing", "Partially_Cancelled")
                 ]
-
-
-
-#now hey i wnat u to make changes in the nodes !! here is there are too hard core code we had written for the cli and all because we had used  basically wrtoe the if else for everu situation can occur in the confirmation node !! like select 2 -3 what if we create a ui like that i mean it lets us show
-
-
                 header_title = "📦 Orders Eligible for Cancellation:"
             elif action == "return_order":
                 eligible_orders = []
@@ -142,37 +237,77 @@ def order_lookup_node(state: CustomerState) -> dict:
                 eligible_orders = all_recent
                 header_title = "📦 Your Recent Orders:"
 
-            displayed_orders = eligible_orders[:3]
+            displayed_orders = eligible_orders[:4]
             if displayed_orders:
-                orders_list = []
-                for idx, o in enumerate(displayed_orders, 1):
-                    o_id = o.get("order_id")
-                    o_status = o.get("status", "")
-                    o_amt = o.get("total_amount", 0)
-                    orders_list.append(f"- **[{idx}] ORD-{o_id}** — ₹{o_amt} (`{o_status}`)")
-
-                orders_snippet = f"\n\n**{header_title}**\n" + "\n".join(orders_list) + "\n\n"
-                selection_hint = (
-                    f"👉 **Type a number (1 to {len(displayed_orders)})** or enter your **Order ID** (e.g. `ORD-{displayed_orders[0].get('order_id')}`):\n\n"
-                    f"*(Or type `'menu'` to return to the main menu)*"
-                )
-                prompt = f"Sure, I can help you {action_text}.{orders_snippet}{selection_hint}"
+                orders_options = [
+                    {
+                        "label": f"📦 ORD-{o['order_id']} — ₹{float(o.get('total_amount', 0)):.2f} — {o.get('status')}",
+                        "value": str(o['order_id'])
+                    }
+                    for o in displayed_orders
+                ]
+                payload = {
+                    "type": "order_selection",
+                    "title": f"Select an Order to {action_verb.title()}",
+                    "prompt": f"📦 **Select an order to {action_verb}:**",
+                    "orders": [
+                        {
+                            "order_id": str(o["order_id"]),
+                            "status": o.get("status", ""),
+                            "total": float(o.get("total_amount", 0)),
+                            "order_date": str(o.get("order_date", ""))[:10] if o.get("order_date") else "",
+                        }
+                        for o in displayed_orders
+                    ],
+                    "options": orders_options + [{"label": "🔙 Back to Main Menu", "value": "menu"}]
+                }
             else:
                 if action == "cancel_order":
                     reason_text = "cancellation (orders already shipped or delivered cannot be cancelled directly)"
                 else:
                     reason_text = f"return (orders must be delivered within the last {RETURN_WINDOW_DAYS} days)"
 
-                prompt = (
-                    f"Sure, I can help you {action_text}.\n\n"
-                    f"ℹ️ **You have no recent orders eligible for {reason_text}.**\n\n"
-                    f"👉 Please enter your **Order ID** in format `ORD-XX` (e.g. `ORD-15`) if you wish to check another order:\n\n"
-                    f"*(Or type `'menu'` to go back)*"
-                )
+                payload = {
+                    "type": "order_selection",
+                    "prompt": (
+                        f"Sure, I can help you {action_text}.\n\n"
+                        f"ℹ️ **You have no recent orders eligible for {reason_text}.**\n\n"
+                        f"👉 Please enter your **Order ID** in format `ORD-XX` (e.g. `ORD-15`) if you wish to check another order:\n\n"
+                    ),
+                    "orders": [],
+                    "options": [{"label": "🔙 Back to Main Menu", "value": "menu"}]
+                }
 
-        user_input = interrupt(prompt).strip().upper()
+        raw_input = interrupt(payload)
 
-        if user_input in ("MENU", "MAIN MENU", "BACK", "EXIT", "NO"):
+        # Handle structured dictionary or string response
+        if isinstance(raw_input, dict):
+            selected_val = str(
+                raw_input.get("selected_order_id")
+                or raw_input.get("order_id")
+                or raw_input.get("value")
+                or ""
+            ).strip()
+        elif isinstance(raw_input, str):
+            raw_str = raw_input.strip()
+            if raw_str.startswith("{") and raw_str.endswith("}"):
+                try:
+                    parsed = json.loads(raw_str)
+                    selected_val = str(
+                        parsed.get("selected_order_id")
+                        or parsed.get("order_id")
+                        or parsed.get("value")
+                        or ""
+                    ).strip()
+                except Exception:
+                    selected_val = raw_str
+            else:
+                selected_val = raw_str
+        else:
+            selected_val = str(raw_input or "").strip()
+
+        clean_val = selected_val.upper()
+        if clean_val in ("MENU", "MAIN MENU", "BACK", "EXIT", "NO"):
             return {
                 "action_type": "exit_to_menu",
                 "retry_count": 0,
@@ -180,14 +315,19 @@ def order_lookup_node(state: CustomerState) -> dict:
                 "customer_details": None,
             }
 
-        # Check if user typed a number matching one of the displayed eligible orders (e.g. '1', '2')
-        displayed_orders = eligible_orders[:3] if eligible_orders else []
-        if displayed_orders and user_input.isdigit() and 1 <= int(user_input) <= len(displayed_orders):
-            selected_order = displayed_orders[int(user_input) - 1]
+        # Check if user typed index like '1' or '2'
+        displayed_orders = eligible_orders[:4] if eligible_orders else []
+        if displayed_orders and clean_val.isdigit() and 1 <= int(clean_val) <= len(displayed_orders):
+            selected_order = displayed_orders[int(clean_val) - 1]
             order_id = str(selected_order.get("order_id"))
         else:
-            id_match = re.search(r'ORD-?(\d+)', user_input)
-            order_id = id_match.group(1) if id_match else None
+            id_match = re.search(r'ORD-?(\d+)', clean_val, re.IGNORECASE)
+            if id_match:
+                order_id = id_match.group(1)
+            elif clean_val.isdigit():
+                order_id = clean_val
+            else:
+                order_id = None
 
     # 2. Query PostgreSQL only if valid format was provided
     order_details = get_order_with_items(order_id, customer_id=user_id) if order_id else None
@@ -210,261 +350,197 @@ def order_lookup_node(state: CustomerState) -> dict:
 
 
 def human_escalate_node(state: CustomerState) -> dict:
-
-    # it should have the interrupt msg and the msg box that will tell the user
-    # to write the input or msg for the human
-    # or the email maybe for the human esacaltion if u wnat adding latency so 
-    # this way only serioes people will write the email and get to us4
-    return {"messages": [AIMessage(content="Human escalate — placeholder")]}
+    """Displays human escalation & support ticket placeholder with option to return to the main menu."""
+    interrupt({
+        "prompt": (
+            "💬 **Human Support & Ticket Escalation (Placeholder)**\n\n"
+            "Your request has been routed to our priority customer care team. "
+            "A support ticket has been recorded, and an agent will follow up with you shortly.\n\n"
+            "*(Click below when you want to return to the main menu)*"
+        ),
+        "options": [
+            {"label": "🏠 Return to Main Menu", "value": "menu"}
+        ]
+    })
+    return {
+        "action_type": "exit_to_menu",
+        "messages": [AIMessage(content="Returned from Human Support.")],
+    }
 
 
 
 def confirm_action_node(state: CustomerState) -> dict:
     """Unified confirmation node for both Cancel and Return.
-    Handles single-item, multi-item selection, and partial quantity cancellation/returns."""
+    Uses structured UI interrupts: item selection with steppers, server-side refund calculation, and final confirmation."""
     order = state.get("customer_details") or {}
-    order_id = order.get("order_id", state.get("order_id"))
+    order_id = str(order.get("order_id", state.get("order_id") or ""))
     all_items = order.get("items", [])
-    total_amount = order.get("total_amount", 0)
-    action = state.get("action_type", "cancel")
+    total_amount = float(order.get("total_amount", 0))
+    action = state.get("action_type", "cancel_order")
 
     action_verb = "cancel" if action == "cancel_order" else "return"
-    action_noun = "Cancellation" if action == "cancel_order" else "Return Request"
+    action_noun = "Cancellation" if action == "cancel_order" else "Return"
+    action_done = "cancelled" if action == "cancel_order" else "returned"
 
-    # Filter for active items that can still be cancelled or returned
-    active_items = [it for it in all_items if it.get("item_status") not in ("Cancelled", "Returned")]
+    # Filter active items that can still be cancelled or returned
+    active_items = [
+        it for it in all_items 
+        if it.get("item_status") not in ("Cancelled", "Returned")
+    ]
     if not active_items:
         active_items = all_items
 
-    # -------------------------------------------------------------
-    # CASE 1: Single item in the order
-    # -------------------------------------------------------------
-    if len(active_items) <= 1:
-        item = active_items[0] if active_items else {
-            "product_name": "Order Items", "quantity": 1, "unit_price": total_amount, "order_item_id": None
+    # Format items for structured UI
+    items_data = [
+        {
+            "item_id": it.get("order_item_id") or it.get("id"),
+            "name": it.get("product_name", "Item"),
+            "quantity": int(it.get("quantity", 1)),
+            "unit_price": float(it.get("unit_price", 0)),
         }
-        item_name = item.get("product_name", "Item")
-        max_qty = item.get("quantity", 1)
-        unit_price = item.get("unit_price", total_amount)
+        for it in active_items
+    ]
 
-        action_done = "cancelled" if action == "cancel_order" else "returned"
+    # --- Turn 1: Item & Quantity Selection Interrupt ---
+    selection_payload = {
+        "type": "item_quantity_selection",
+        "title": f"Order #ORD-{order_id}",
+        "order_id": order_id,
+        "action": action,
+        "action_verb": action_verb,
+        "action_noun": action_noun,
+        "status": order.get("status", ""),
+        "order_date": str(order.get("order_date", ""))[:10] if order.get("order_date") else "",
+        "order_total": total_amount,
+        "items": items_data,
+        "prompt": f"Please select the items and quantities you wish to {action_verb} for **Order #ORD-{order_id}**:",
+        "options": [
+            {"label": f"❌ {action_verb.title()} Entire Order", "value": "all"},
+            {"label": "🔙 Keep Order / Back", "value": "back"},
+        ]
+    }
 
-        refund_note = (
-            f"A refund of ₹{total_amount} has been initiated."
-            if action == "cancel_order"
-            else f"Our courier will pick up the package within 24–48 hours. A refund of ₹{total_amount} will be processed after inspection."
-        )
+    selection_response = interrupt(selection_payload)
 
-        # Subcase 1A: Quantity is exactly 1 -> Direct yes/no prompt
-        if max_qty <= 1:
-            prompt = (
-                f"**📋 Order Summary for {action_noun} (Order #{order_id}):**\n\n"
-                f"- **Item**: {item_name} (Qty: 1)\n"
-                f"- **Estimated Refund**: ₹{total_amount}\n\n"
-                f"**Are you sure you want to {action_verb} this order?**\n\n"
-                f"- **1** -> Yes, confirm\n"
-                f"- **2** -> No, keep order and return to main menu"
-            )
-            reply = interrupt(prompt).strip().lower()
-            if reply in ("y", "yes", "1", "confirm", "sure"):
-                return {
-                    "confirmed": True,
-                    "context": {
-                        "action_scope": "all",
-                        "item_id": item.get("order_item_id"),
-                        "item_name": item_name,
-                        "quantity": 1,
-                        "refund_amount": total_amount,
-                    },
-                    "messages": [AIMessage(content=f"✅ Successfully {action_done} Order #{order_id} ({item_name})! {refund_note}")],
-                }
+    # Check if user cancelled or went back
+    if isinstance(selection_response, dict):
+        if selection_response.get("action") in ("back", "abort", "exit") or selection_response.get("value") in ("back", "menu", "keep"):
             return {
                 "confirmed": False,
                 "context": None,
-                "messages": [AIMessage(content=f"No changes made to Order #{order_id}. Returning to main menu.")],
+                "messages": [AIMessage(content=f"No changes made to Order #ORD-{order_id}. Returning to main menu.")],
             }
-
-        # Subcase 1B: Single line item, but Quantity > 1 (e.g. 3 T-shirts)
-        qty_prompt = (
-            f"**📋 Order Summary for {action_noun} (Order #{order_id}):**\n\n"
-            f"- **Item**: {item_name}\n"
-            f"- **Ordered Quantity**: {max_qty} (₹{unit_price} each | Total: ₹{total_amount})\n\n"
-            f"**How many would you like to {action_verb}?**\n\n"
-            f"- Type a quantity number (1 to {max_qty})\n"
-            f"- Type `'all'` to {action_verb} all {max_qty} items (₹{total_amount} refund)\n"
-            f"- Type `'no'` to return to the main menu"
-        )
-        qty_reply = interrupt(qty_prompt).strip().lower()
-        if qty_reply in ("n", "no", "back", "exit"):
+        chosen_items = selection_response.get("items", [])
+    elif isinstance(selection_response, str):
+        clean_str = selection_response.strip().lower()
+        if clean_str in ("back", "menu", "keep", "no", "exit", "abort"):
             return {
                 "confirmed": False,
                 "context": None,
-                "messages": [AIMessage(content=f"No changes made to Order #{order_id}. Returning to main menu.")],
+                "messages": [AIMessage(content=f"No changes made to Order #ORD-{order_id}. Returning to main menu.")],
             }
-
-        if qty_reply in ("all", "entire"):
-            target_qty = max_qty
-            refund_calc = total_amount
-            scope = "all"
-        else:
+        if clean_str.startswith("{") and clean_str.endswith("}"):
             try:
-                target_qty = int(qty_reply)
-                if not (1 <= target_qty <= max_qty):
-                    return {"confirmed": False, "context": None}
-                refund_calc = target_qty * unit_price
-                scope = "all" if target_qty == max_qty else "single"
-            except ValueError:
-                return {"confirmed": False, "context": None}
+                parsed = json.loads(selection_response)
+                chosen_items = parsed.get("items", [])
+            except Exception:
+                chosen_items = []
+        elif clean_str in ("all", "all items", "entire", "yes"):
+            chosen_items = [{"item_id": it["item_id"], "quantity": it["quantity"]} for it in items_data]
+        else:
+            chosen_items = []
+    else:
+        chosen_items = []
 
-        # Final Confirmation
-        confirm_reply = interrupt(
-            f"**Confirm {action_noun} for {target_qty}x {item_name} (Refund: ₹{refund_calc})?**\n\n"
-            f"- **1** -> Yes, confirm\n"
-            f"- **2** -> No, cancel and return to main menu"
-        ).strip().lower()
-        if confirm_reply in ("y", "yes", "1", "confirm", "sure"):
-            note = (
-                f"A refund of ₹{refund_calc} has been initiated."
-                if action == "cancel"
-                else f"Our courier will pick up within 24–48 hours. Refund of ₹{refund_calc} will follow inspection."
-            )
-            return {
-                "confirmed": True,
-                "context": {
-                    "action_scope": scope,
-                    "item_id": item.get("order_item_id"),
-                    "item_name": item_name,
-                    "quantity": target_qty,
-                    "refund_amount": refund_calc,
-                },
-                "messages": [AIMessage(content=f"✅ Successfully {action_done} {target_qty}x {item_name} from Order #{order_id}! {note}")],
-            }
-        return {"confirmed": False, "context": None}
+    # Authoritative server-side refund calculation (never trust client amount)
+    selected_summary = []
+    authoritative_refund = 0.0
 
-    # -------------------------------------------------------------
-    # CASE 2: Multiple items in the order
-    # -------------------------------------------------------------
-    item_lines = "\n".join(
-        f"- **[{idx + 1}]** {it['product_name']} — Qty: {it['quantity']}, ₹{it['unit_price'] * it['quantity']:.2f}"
-        for idx, it in enumerate(active_items)
-    )
-    selection_prompt = (
-        f"**📋 Items in Order #{order_id}:**\n\n"
-        f"{item_lines}\n\n"
-        f"**What would you like to {action_verb}?**\n\n"
-        f"- Type an **Item number** (e.g. `1` or `2`) to select a specific item\n"
-        f"- Type `'all'` to {action_verb} the **ENTIRE order** (Total Refund: ₹{total_amount:.2f})\n"
-        f"- Type `'no'` to return to the main menu"
-    )
-    reply = interrupt(selection_prompt).strip().lower()
+    for chosen in chosen_items:
+        it_id = chosen.get("item_id")
+        req_qty = int(chosen.get("quantity", 0))
+        if req_qty <= 0:
+            continue
 
-    if reply in ("n", "no", "exit", "back"):
+        matching = next((it for it in items_data if it["item_id"] == it_id), None)
+        if matching:
+            valid_qty = min(req_qty, matching["quantity"])
+            subtotal = valid_qty * matching["unit_price"]
+            authoritative_refund += subtotal
+            selected_summary.append({
+                "item_id": matching["item_id"],
+                "name": matching["name"],
+                "quantity": valid_qty,
+                "unit_price": matching["unit_price"],
+                "subtotal": subtotal,
+            })
+
+    if not selected_summary:
         return {
             "confirmed": False,
             "context": None,
-            "messages": [AIMessage(content=f"No changes made to Order #{order_id}. Returning to main menu.")],
+            "messages": [AIMessage(content=f"No items were selected for {action_noun}. Returning to main menu.")],
         }
 
-    action_done = "cancelled" if action == "cancel_order" else "returned"
+    # --- Turn 2: Final Structured Confirmation Interrupt ---
+    summary_lines = "\n".join([
+        f"- **{it['name']}** × {it['quantity']} (₹{it['subtotal']:.2f})"
+        for it in selected_summary
+    ])
 
-    # If user wants to cancel/return the ENTIRE order:
-    if reply in ("all", "entire"):
-        final_confirm = interrupt(
-            f"**Are you sure you want to {action_verb} ALL items in Order #{order_id} for a full refund of ₹{total_amount:.2f}?**\n\n"
-            f"- **1** -> Yes, confirm\n"
-            f"- **2** -> No, return to main menu"
-        ).strip().lower()
-        if final_confirm in ("y", "yes", "1", "confirm", "sure"):
-            note = (
-                f"A full refund of ₹{total_amount} has been initiated."
-                if action == "cancel"
-                else f"Courier pickup arranged within 24–48 hours. Full refund of ₹{total_amount} will follow."
-            )
-            return {
-                "confirmed": True,
-                "context": {
-                    "action_scope": "all",
-                    "item_id": None,
-                    "item_name": "All Items",
-                    "quantity": sum(it.get("quantity", 1) for it in active_items),
-                    "refund_amount": total_amount,
-                },
-                "messages": [AIMessage(content=f"✅ Successfully {action_done} Order #{order_id} (All Items)! {note}")],
-            }
-        return {"confirmed": False, "context": None}
+    confirm_payload = {
+        "type": "confirmation",
+        "title": f"Confirm {action_noun}",
+        "order_id": order_id,
+        "items": selected_summary,
+        "refund_amount": authoritative_refund,
+        "prompt": (
+            f"⚠️ **Confirm {action_noun}**\n\n"
+            f"**Selected Items:**\n{summary_lines}\n\n"
+            f"💰 **Estimated Refund:** ₹{authoritative_refund:.2f}\n\n"
+            f"Are you sure you want to proceed with this {action_verb}?"
+        ),
+        "options": [
+            {"label": f"✅ Yes, Confirm {action_noun}", "value": "yes"},
+            {"label": "🔙 Go Back", "value": "no"},
+        ]
+    }
 
-    # If user selected a specific item by index:
-    try:
-        item_index = int(reply) - 1
-        if not (0 <= item_index < len(active_items)):
-            return {"confirmed": False, "context": None}
-        chosen_item = active_items[item_index]
-    except ValueError:
-        return {"confirmed": False, "context": None}
+    final_reply = interrupt(confirm_payload)
 
-    item_name = chosen_item["product_name"]
-    max_qty = chosen_item.get("quantity", 1)
-    unit_price = chosen_item.get("unit_price", 0)
+    # Check confirmation reply
+    is_confirmed = False
+    if isinstance(final_reply, dict):
+        is_confirmed = bool(final_reply.get("confirmed")) or final_reply.get("value") in ("yes", "1")
+    elif isinstance(final_reply, str):
+        is_confirmed = final_reply.strip().lower() in ("yes", "y", "1", "confirm", "sure", "true")
 
-    # If the chosen item has quantity > 1, ask how many units to cancel/return
-    if max_qty > 1:
-        qty_sub_prompt = (
-            f"**You selected:** {item_name} (Ordered: {max_qty}, ₹{unit_price} each)\n\n"
-            f"**How many would you like to {action_verb}?**\n\n"
-            f"- Type a quantity number (1 to {max_qty})\n"
-            f"- Type `'all'` to {action_verb} all {max_qty}\n"
-            f"- Type `'no'` to cancel and return to main menu"
-        )
-        sub_qty_reply = interrupt(qty_sub_prompt).strip().lower()
-        if sub_qty_reply in ("n", "no", "back", "exit"):
-            return {"confirmed": False, "context": None}
-
-        if sub_qty_reply in ("all", "entire"):
-            target_qty = max_qty
-        else:
-            try:
-                target_qty = int(sub_qty_reply)
-                if not (1 <= target_qty <= max_qty):
-                    return {"confirmed": False, "context": None}
-            except ValueError:
-                return {"confirmed": False, "context": None}
-    else:
-        target_qty = 1
-
-    refund_calc = target_qty * unit_price
-
-    # Final Step: Explicit Yes/No confirmation
-    final_prompt = (
-        f"**Confirm {action_noun} Summary:**\n\n"
-        f"- **Item**: {target_qty}x {item_name}\n"
-        f"- **Estimated Refund**: ₹{refund_calc:.2f}\n\n"
-        f"**Proceed with this {action_verb}?**\n\n"
-        f"- **1** -> Yes, confirm\n"
-        f"- **2** -> No, cancel and return to main menu"
-    )
-    final_reply = interrupt(final_prompt).strip().lower()
-    if final_reply in ("y", "yes", "1", "confirm", "sure", "proceed"):
+    if is_confirmed:
         note = (
-            f"A refund of ₹{refund_calc} has been initiated."
+            f"A refund of ₹{authoritative_refund:.2f} has been initiated to your original payment method. "
+            f"It will be credited back to your account within 4–7 business days according to our store policy [SEC-4.0]."
             if action == "cancel_order"
-            else f"Our courier will pick up within 24–48 hours. Refund of ₹{refund_calc} will follow."
+            else (
+                f"Our courier partner will pick up the package within 24–48 hours. "
+                f"Once doorstep inspection is completed, your refund of ₹{authoritative_refund:.2f} will be credited "
+                f"back to your account within 4–7 business days according to our store policy [SEC-4.0]."
+            )
         )
         return {
             "confirmed": True,
             "context": {
-                "action_scope": "single",
-                "item_id": chosen_item.get("order_item_id"),
-                "item_name": item_name,
-                "quantity": target_qty,
-                "refund_amount": refund_calc,
+                "action_scope": "all" if len(selected_summary) == len(items_data) else "partial",
+                "order_id": order_id,
+                "items": selected_summary,
+                "refund_amount": authoritative_refund,
             },
-            "messages": [AIMessage(content=f"✅ Successfully {action_done} {target_qty}x {item_name} from Order #{order_id}! {note}")],
+            "messages": [AIMessage(content=f"✅ Successfully {action_done} selected items for Order #ORD-{order_id}!\n\n{note}")],
         }
 
     return {
         "confirmed": False,
         "context": None,
-        "messages": [AIMessage(content=f"No changes made to Order #{order_id}. Returning to main menu.")],
+        "messages": [AIMessage(content=f"No changes made to Order #ORD-{order_id}. Returning to main menu.")],
     }
 
 
@@ -555,17 +631,21 @@ def policy_blocked_node(state: CustomerState) -> dict:
             msg = f"Order #{order_id} is currently '{status}' and cannot be returned."
 
     # --- 2. Prompt Customer ---
-    reply = interrupt(
-        f"❌ **Policy Notice:**\n{msg}\n\n"
-        "**How would you like to proceed?**\n\n"
-        "- **1** -> Raise a support ticket / Talk to an agent\n"
-        "- **2** -> Return to Main Menu\n\n"
-        "*(Or simply type your question/complaint)*"
-    ).strip()
-
+    reply = interrupt({
+        "prompt": (
+            f"❌ **Policy Notice:**\n{msg}\n\n"
+            "**How would you like to proceed?**\n\n"
+            "*(Or type your question/complaint directly)*"
+        ),
+        "options": [
+            {"label": "🎫 Raise Support Ticket / Talk to Agent", "value": "1"},
+            {"label": "🏠 Return to Main Menu", "value": "2"},
+        ]
+    })
 
     # --- 3. Step A: Fast Shortcuts (Zero Cost) ---
-    cleaned = reply.lower()
+    raw_val = reply.get("value") if isinstance(reply, dict) else reply
+    cleaned = str(raw_val or "").strip().lower()
     if cleaned in ("1", "ticket", "human", "agent", "escalate"):
         decision = "ticket"
     elif cleaned in ("2", "menu", "main menu", "back", "exit", "no"):
@@ -576,7 +656,7 @@ def policy_blocked_node(state: CustomerState) -> dict:
         try:
             ai_choice: BlockedOptionClassifier = blocked_classifier_llm.invoke(
                 f"The customer's request was rejected with message: '{msg}'.\n"
-                f"Customer typed: '{reply}'.\n"
+                f"Customer typed: '{cleaned}'.\n"
                 "Classify whether the customer wants human support/ticket ('ticket') "
                 "or wants to return to the main menu/exit ('menu')."
             )
@@ -599,15 +679,20 @@ def retry_exhausted_node(state: CustomerState) -> dict:
     prompt = (
         "⚠️ **We couldn't locate that order after 3 attempts.**\n\n"
         "**How would you like to proceed?**\n\n"
-        "- **1** -> Try entering Order ID again\n"
-        "- **2** -> Return to the main menu\n"
-        "- **3** -> Raise a support ticket (our team will reach out within 24 hours)\n\n"
         "*(Or type your message directly)*"
     )
-    reply = interrupt(prompt).strip()
+    reply = interrupt({
+        "prompt": prompt,
+        "options": [
+            {"label": "🔁 Try Entering Order ID Again", "value": "1"},
+            {"label": "🏠 Return to Main Menu", "value": "2"},
+            {"label": "🎫 Raise Support Ticket", "value": "3"},
+        ]
+    })
 
     # Step A: Fast Shortcuts (0ms, Zero Cost)
-    cleaned = reply.lower()
+    raw_val = reply.get("value") if isinstance(reply, dict) else reply
+    cleaned = str(raw_val or "").strip().lower()
     if cleaned in ("1", "retry", "again", "try again", "re-enter", "cancel", "return", "i want to cancel", "i want to return", "i wnat to cancel my order"):
         decision = "retry"
     elif cleaned in ("2", "menu", "main menu", "back", "exit", "no"):

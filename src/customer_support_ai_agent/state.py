@@ -13,8 +13,10 @@ class CustomerState(TypedDict, total=False):
     retry_count: int
     confirmed: Optional[bool]
     policy_block_reason: Optional[str]
+    blocked_choice: Optional[str]
 
     retry_exhausted_choice: Optional[str]
     context: Optional[Dict[str, Any]]
+    faq_prompt: Optional[str]
     messages: Annotated[list[BaseMessage], add_messages]
 

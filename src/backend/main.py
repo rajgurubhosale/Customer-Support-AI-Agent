@@ -1,4 +1,21 @@
+import threading
 from fastapi import FastAPI
+from customer_support_ai_agent.nodes import load_policy_files
+from customer_support_ai_agent.prompts import FAQ_SYSTEM_PROMPT
+from customer_support_ai_agent.model import model
+from langchain_core.messages import SystemMessage, HumanMessage
+
+
+def warmup_kv_cache():
+    """Background worker to warm up both RAM cache and LLM provider KV cache on boot."""
+    try:
+        policy = load_policy_files()
+        system_prompt = FAQ_SYSTEM_PROMPT.format(store_policies=policy)
+        model.invoke([SystemMessage(content=system_prompt), HumanMessage(content="ping")])
+        print("⚡ [Warmup] Store policy KV Cache primed successfully on LLM provider!")
+    except Exception as e:
+        print(f"⚠️ [Warmup] Non-fatal notice: {e}")
+
 
 
 app = FastAPI(
@@ -6,6 +23,12 @@ app = FastAPI(
     description="REST API powering the Customer Support LangGraph AI Agent",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+def startup_event():
+    threading.Thread(target=warmup_kv_cache, daemon=True).start()
+
 
 
 @app.get("/health")

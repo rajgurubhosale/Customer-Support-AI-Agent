@@ -4,9 +4,9 @@ from typing import Optional, List, Any, Dict
 
 class ChatRequest(BaseModel):
     user_id: int = Field(..., description="Customer ID (e.g. 29)")
-    message: Optional[str] = Field(
+    message: Optional[Any] = Field(
         default=None,
-        description="Customer input text. If null/empty on a new thread, the API starts the graph and returns the initial greeting.",
+        description="Customer input text or structured interaction payload (dict/string). If null/empty on a new thread, the API starts the graph.",
     )
     thread_id: Optional[str] = Field(
         default=None,
@@ -40,4 +40,8 @@ class ChatResponse(BaseModel):
     options: Optional[List[Dict[str, str]]] = Field(
         default_factory=list,
         description="List of clickable quick options for the user (e.g. [{'label': 'Cancel', 'value': '2'}]).",
+    )
+    ui_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Structured interaction payload for rich UI widgets (e.g. item_quantity_selection).",
     )

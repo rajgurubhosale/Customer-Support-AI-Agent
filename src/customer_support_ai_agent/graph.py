@@ -16,6 +16,7 @@ from customer_support_ai_agent.routes import (
     route_order_lookup,
     route_blocked_choice,
     route_retry_exhausted,
+    route_faq,
 )
 from customer_support_ai_agent.state import CustomerState
 graph = StateGraph(CustomerState)
@@ -45,7 +46,16 @@ graph.add_conditional_edges(
     },
 )
 
-graph.add_edge("faq_node","start_node")
+graph.add_conditional_edges(
+    "faq_node",
+    route_faq,
+    {
+        "faq_node": "faq_node",
+        "order_lookup": "order_lookup_node",
+        "human_escalate": "human_escalate_node",
+        "start": "start_node",
+    },
+)
 
 
 graph.add_conditional_edges(
@@ -61,7 +71,7 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("confirm_action_node", "start_node")
-graph.add_edge("faq_node", "start_node")
+graph.add_edge("human_escalate_node", "start_node")
 
 
 

@@ -15,7 +15,18 @@ If Bank Rejects: Updated to 'Failed'. RAISE HUMAN TICKET
 
 # SHOULD BE AN OPTIONS THERE FOR THE CHECK ORDER ALSO
 
+Yes, substantially. Here is how it saves cost:
 
+1. 50% to 80% Lower Token Pricing
+Major LLM providers (Anthropic, OpenAI, DeepSeek, Gemini, and Groq's tiered models) offer discounted pricing on cached prompt tokens:
+
+Uncached Input: Charged at standard rate (100%).
+Cached Input: Discounted by 50% to 90% depending on the provider, because their chips do not recompute the attention matrices for the cached tokens.
+2. The Math for 100 User Queries
+Without KV Caching: 100 queries × ~3,900 policy tokens = 390,000 input tokens computed from scratch.
+With KV Caching: 1 warmup call computes 3,900 tokens. The other 99 queries read from the cache at the cached discount rate (or 0 incremental compute on hardware).
+3. Bonus: 2x to 4x Faster Latency
+Beyond saving direct dollar costs, cached requests return responses significantly faster (Time to First Token drops from ~300ms–800ms down to ~50ms–100ms) because the model skips processing 3,900 tokens on every turn.
 
 
 

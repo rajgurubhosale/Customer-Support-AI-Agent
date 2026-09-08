@@ -24,7 +24,7 @@ def get_order_with_items(order_id: int, customer_id: int) -> Optional[dict]:
         print(f"Invalid input: order_id={order_id}, customer_id={customer_id}")
         return None
 
-    try:
+    try: 
         with db_pool.connection() as conn:
             with conn.cursor() as cur:
                 # Fetch Order 
@@ -49,8 +49,6 @@ def get_order_with_items(order_id: int, customer_id: int) -> Optional[dict]:
         return None
 
 
-
-            
 
 def get_order_history(customer_id: int) -> Optional[list[dict]]:
     ''' return customer order history'''

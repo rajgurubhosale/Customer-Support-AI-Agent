@@ -7,15 +7,17 @@ wheels/
 *.egg-info
 .agents
 # Virtual environments
+src\customer_support_ai_agent\current.md
 .venv
 notebooks/temp.ipynb
 /docs
-GEMINI.md
+GEMINI.
+md
 .env
-
+src/customer_support_ai_agent/current.md
 skills
 
 datasets
-src\customer_support_ai_agent\__pycache__
+src/customer_support_ai_agent/__pycache__
 
 .vscode
