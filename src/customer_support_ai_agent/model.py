@@ -6,7 +6,8 @@ load_dotenv()
 api_key = os.getenv("CHAT_GROQ")     
 
 model = ChatGroq(
-    model = "openai/gpt-oss-120b",
+    model="openai/gpt-oss-120b",
     api_key=api_key,
-    temperature=0
+    temperature=0,
+    max_tokens=600,
 )

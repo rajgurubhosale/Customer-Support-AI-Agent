@@ -285,10 +285,10 @@ def handle_user_submission(
 
         # Save intermediate messages
         for notice in data.get("messages", []):
-
+            formatted_notice = notice if any(notice.startswith(sym) for sym in ("✅", "📦", "💬", "⚠️", "❌", "💡", "•", "ℹ️")) else f"ℹ️ {notice}"
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": f"✅ {notice}",
+                "content": formatted_notice,
             })
 
         # Save main AI response
@@ -424,7 +424,7 @@ if ui_data and ui_data.get("type") == "item_quantity_selection":
         else:
             st.caption("ℹ️ Adjust quantities above using `+` and `-` to select items.")
 
-        btn_col1, btn_col2 = st.columns(2)
+        btn_col1, btn_col2, btn_col3 = st.columns([1.4, 1.4, 1.2])
         confirm_disabled = (len(selected_items) == 0)
 
         if btn_col1.button(
@@ -436,12 +436,22 @@ if ui_data and ui_data.get("type") == "item_quantity_selection":
         ):
             clean_payload_items = [{"item_id": s["item_id"], "quantity": s["quantity"]} for s in selected_items]
             handle_user_submission(
-                {"action": action_verb, "items": clean_payload_items},
+                {"action": action_verb, "scope": "partial", "items": clean_payload_items},
                 display_label=f"Confirm {action_noun} ({len(selected_items)} items)"
             )
 
         if btn_col2.button(
-            "🔙 Back to Main Menu",
+            f"❌ {action_verb.title()} Whole Order",
+            use_container_width=True,
+            key=f"whole_order_btn_{len(st.session_state.messages)}"
+        ):
+            handle_user_submission(
+                {"action": action_verb, "scope": "all"},
+                display_label=f"❌ {action_verb.title()} Whole Order"
+            )
+
+        if btn_col3.button(
+            "🔙 Back to Menu",
             use_container_width=True,
             key=f"back_btn_{len(st.session_state.messages)}"
         ):

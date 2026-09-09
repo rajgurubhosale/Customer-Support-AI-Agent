@@ -3,93 +3,43 @@ from langgraph.checkpoint.memory import MemorySaver
 import os
 
 from customer_support_ai_agent.nodes import (
-    entry_node,
-    human_escalate_node,
+    open_router_node,
     order_lookup_node,
-    policy_blocked_node,
     confirm_action_node,
-    retry_exhausted_node,
-    faq_node
+    cancel_order_node,
+    return_order_node,
+    policy_blocked_node,
+    human_escalate_node,
 )
 from customer_support_ai_agent.routes import (
-    route_menu,
+    route_open_router,
     route_order_lookup,
+    route_confirm_action,
     route_blocked_choice,
-    route_retry_exhausted,
-    route_faq,
 )
 from customer_support_ai_agent.state import CustomerState
 graph = StateGraph(CustomerState)
 
-# 1. Register Active Nodes
-graph.add_node("start_node", entry_node)
+# 1. Register Core Nodes
+graph.add_node("start_node", open_router_node)
 graph.add_node("order_lookup_node", order_lookup_node)
-graph.add_node("policy_blocked_node", policy_blocked_node)
 graph.add_node("confirm_action_node", confirm_action_node)
-graph.add_node("retry_exhausted_node", retry_exhausted_node)
+graph.add_node("cancel_order_node", cancel_order_node)
+graph.add_node("return_order_node", return_order_node)
+graph.add_node("policy_blocked_node", policy_blocked_node)
 graph.add_node("human_escalate_node", human_escalate_node)
-graph.add_node("faq_node", faq_node)
 
-# 2. Register Simple Edges
+# 2. Simple Direct Edges
 graph.add_edge(START, "start_node")
-
-
-graph.add_conditional_edges(
-    "start_node",
-    route_menu,
-    {   
-        "order_lookup": "order_lookup_node",
-        "human_escalate": "human_escalate_node",
-        "faq_node": "faq_node",
-        "start": "start_node",
-        "end": END,
-    },
-)
-
-graph.add_conditional_edges(
-    "faq_node",
-    route_faq,
-    {
-        "faq_node": "faq_node",
-        "order_lookup": "order_lookup_node",
-        "human_escalate": "human_escalate_node",
-        "start": "start_node",
-    },
-)
-
-
-graph.add_conditional_edges(
-    "order_lookup_node",
-    route_order_lookup,
-    {
-        "retry": "order_lookup_node",
-        "retry_exhausted": "retry_exhausted_node",
-        "eligible": "confirm_action_node",
-        "blocked": "policy_blocked_node",
-        "start": "start_node",
-    },
-)
-
-graph.add_edge("confirm_action_node", "start_node")
+graph.add_edge("cancel_order_node", "start_node")
+graph.add_edge("return_order_node", "start_node")
 graph.add_edge("human_escalate_node", "start_node")
 
-
-
-
-graph.add_conditional_edges("policy_blocked_node",
-route_blocked_choice,
-    {
-        "human_escalate": "human_escalate_node",
-        "start": "start_node",
-    },
-)
-
-graph.add_conditional_edges("retry_exhausted_node", 
-route_retry_exhausted, {
-    "retry": "order_lookup_node",
-    "human_escalate": "human_escalate_node",
-    "start": "start_node",
-})
+# 3. Dynamic Decision Routing
+graph.add_conditional_edges("start_node", route_open_router)
+graph.add_conditional_edges("order_lookup_node", route_order_lookup)
+graph.add_conditional_edges("confirm_action_node", route_confirm_action)
+graph.add_conditional_edges("policy_blocked_node", route_blocked_choice)
 
 # imports 
 from langgraph.types import Command

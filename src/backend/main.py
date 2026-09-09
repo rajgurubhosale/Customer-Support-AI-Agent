@@ -10,11 +10,11 @@ def warmup_kv_cache():
     """Background worker to warm up both RAM cache and LLM provider KV cache on boot."""
     try:
         policy = load_policy_files()
-        system_prompt = FAQ_SYSTEM_PROMPT.format(store_policies=policy)
+        system_prompt = FAQ_SYSTEM_PROMPT.format(store_policies=policy, customer_orders="None")
         model.invoke([SystemMessage(content=system_prompt), HumanMessage(content="ping")])
-        print("⚡ [Warmup] Store policy KV Cache primed successfully on LLM provider!")
+        print("[Warmup] Store policy KV Cache primed successfully on LLM provider!")
     except Exception as e:
-        print(f"⚠️ [Warmup] Non-fatal notice: {e}")
+        print(f"[Warmup] Non-fatal notice: {e}")
 
 
 

@@ -1,64 +1,46 @@
-from  customer_support_ai_agent.state import CustomerState
-
-MAX_MENU_RETRIES = 3
-
-from datetime import datetime, date
+from customer_support_ai_agent.state import CustomerState
 from datetime import datetime, date
 
 MAX_ORDER_RETRIES = 3
 RETURN_WINDOW_DAYS = 7
 
-# UPDATED ROUTESS
-def route_menu(state: CustomerState) -> str:
+
+def route_open_router(state: CustomerState) -> str:
+    """Routes from open_router_node (the conversational front door)."""
+    resume = state.get("resume_node")
+    if resume:
+        return resume if resume.endswith("_node") else f"{resume}_node"
+
     action = state.get("action_type")
-    
-    if action == "cancel_order":
-        return "order_lookup"
-    elif action == "return_order":
-        return "order_lookup"
+    if action in ("cancel_order", "return_order"):
+        return "order_lookup_node"
     elif action == "human_support":
-        return "human_escalate" 
+        return "human_escalate_node"
     elif action == "exit":
         return "end"
-    elif action == 'faq':
-        return 'faq_node'
-    elif action == "unclear":
-        return "start"
-    
-    return "start"
 
+    return "start_node"
 
-def route_faq(state: CustomerState) -> str:
-    """Routes from faq_node: continues chat loop, exits to menu, or hands off to actions."""
-    action = state.get("action_type")
-    if action == "cancel_order":
-        return "order_lookup"
-    elif action == "return_order":
-        return "order_lookup"
-    elif action == "human_support":
-        return "human_escalate"
-    elif action == "exit_to_menu":
-        return "start"
-    return "faq_node"
 
 
 def route_order_lookup(state: CustomerState) -> str:
-    """Routes directly to action-specific confirmation or blocked nodes."""
-    if state.get("action_type") == "exit_to_menu":
-        return "start"
+    """Routes after order_lookup_node."""
+    # Mid-workflow FAQ inquiry -> route to open_router_node to answer
+    if state.get("resume_node"):
+        return "start_node"
 
-    if state.get("retry_count", 0) >= MAX_ORDER_RETRIES:
-        return "retry_exhausted"
+    action = state.get("action_type")
+    if action == "human_support":
+        return "human_escalate_node"
+    if action in ("exit_to_menu", "exit", "faq", None):
+        return "start_node"
 
     order = state.get("customer_details")
     if not order:
-        return "retry"
+        return "order_lookup_node"
 
     status = order.get("status")
-    action = state.get("action_type")   
     items = order.get("items", [])
-
-    # Active line items check
     active_cancel_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned")]
     active_return_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned", "Return_Requested")]
 
@@ -66,9 +48,9 @@ def route_order_lookup(state: CustomerState) -> str:
     if action == "cancel_order":
         if status in ("Placed", "Processing", "Partially_Cancelled"):
             if items and not active_cancel_items:
-                return "blocked"
-            return "eligible"
-        return "blocked"
+                return "policy_blocked_node"
+            return "confirm_action_node"
+        return "policy_blocked_node"
 
     # Return Flow
     if action == "return_order":
@@ -78,28 +60,42 @@ def route_order_lookup(state: CustomerState) -> str:
                 d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
                 if (date.today() - d_date).days <= RETURN_WINDOW_DAYS:
                     if items and not active_return_items:
-                        return "blocked"
-                    return "eligible"
-        return "blocked"
+                        return "policy_blocked_node"
+                    return "confirm_action_node"
+        return "policy_blocked_node"
 
-    return "blocked"
+    return "policy_blocked_node"
+
+
+def route_confirm_action(state: CustomerState) -> str:
+    """Routes after confirm_action_node to dedicated execution nodes or menu."""
+    # Mid-workflow FAQ inquiry -> route to open_router_node to answer
+    if state.get("resume_node"):
+        return "start_node"
+
+    action = state.get("action_type")
+
+    # Confirmed execution routes to dedicated nodes!
+    if state.get("confirmed") is True:
+        if action == "cancel_order":
+            return "cancel_order_node"
+        elif action == "return_order":
+            return "return_order_node"
+
+    # Switched workflow or human support
+    if action in ("cancel_order", "return_order") and state.get("confirmed") is None:
+        return "order_lookup_node"
+    elif action == "human_support":
+        return "human_escalate_node"
+
+    return "start_node"
 
 
 def route_blocked_choice(state: CustomerState) -> str:
-    """Routes the user choice from policy_blocked_node."""
-    if state.get("blocked_choice") == "ticket":
-        return "human_escalate"
-    return "start"
-
-
-
-
-def route_retry_exhausted(state: CustomerState) -> str:
-    choice = state.get("retry_exhausted_choice", "")
-    if choice == "retry":
-        return "retry"
-    elif choice in {"3", "ticket", "human", "escalate"}:
-        return "human_escalate"
-    return "start"
-
-
+    """Routes from policy_blocked_node (Ticket, Workflow Switch, or Main Menu)."""
+    action = state.get("action_type")
+    if action == "human_support":
+        return "human_escalate_node"
+    if action in ("cancel_order", "return_order"):
+        return "order_lookup_node"
+    return "start_node"
