@@ -140,10 +140,18 @@ def order_lookup_node(state: CustomerState) -> dict:
 
     # Fetch eligible orders
     all_orders = get_order_history(user_id) or []
+    today = date.today()
     if action == "cancel_order":
         eligible = [o for o in all_orders if o.get("status") in ("Placed", "Processing", "Partially_Cancelled")]
     else:
-        eligible = [o for o in all_orders if o.get("status") in ("Delivered", "Partially_Returned")]
+        eligible = []
+        for o in all_orders:
+            if o.get("status") in ("Delivered", "Partially_Returned"):
+                d_date = o.get("delivery_date")
+                if d_date:
+                    d = d_date.date() if isinstance(d_date, datetime) else d_date
+                    if (today - d).days <= RETURN_WINDOW_DAYS:
+                        eligible.append(o)
 
     payload = build_order_list_payload(action, eligible, retry_count)
     raw_input = interrupt(payload)
@@ -189,7 +197,29 @@ def order_lookup_node(state: CustomerState) -> dict:
         if order:
             return {"customer_details": order, "order_id": str(decision.order_id), "retry_count": 0}
 
-    # Order not found
+    # If no orders are eligible, answer user pushback/question without showing "order not found"
+    if not eligible:
+        borderline = []
+        for o in all_orders:
+            if o.get("status") in ("Delivered", "Partially_Returned"):
+                d_date = o.get("delivery_date")
+                if d_date:
+                    d = d_date.date() if isinstance(d_date, datetime) else d_date
+                    if 8 <= (today - d).days <= 14:
+                        borderline.append(o)
+
+        user_text = str(raw_input.get("value") if isinstance(raw_input, dict) else raw_input or "").lower()
+        is_borderline_mention = any(w in user_text for w in ("8 day", "9 day", "10 day", "11 day", "12 day", "13 day", "14 day", "past 7", "over 7", "more than 7", "8 days", "9 days", "10 days", "14 days"))
+
+        if (borderline or is_borderline_mention) and action == "return_order":
+            reply = decision.reply or "Standard return policy is strictly 7 days from delivery [SEC-2.5]."
+            msg = f"ℹ️ {reply}\n\nSince your delivery is within the 8–14 day borderline window, you may request an exception review from a support specialist."
+            return {"retry_count": 3, "messages": [AIMessage(content=msg)]}
+
+        reply = decision.reply or ("Orders past the return window cannot be returned [SEC-2.5]." if action == "return_order" else "Orders that have already shipped or delivered cannot be cancelled [SEC-1.1].")
+        return {"retry_count": 0, "messages": [AIMessage(content=f"ℹ️ {reply}")]}
+
+    # Order not found when eligible orders exist
     new_retry = retry_count + 1
     if new_retry >= 3:
         return {"retry_count": new_retry}
@@ -413,8 +443,11 @@ def policy_blocked_node(state: CustomerState) -> dict:
     reason = ""
     if action == "cancel_order" and status in ("Shipped", "Delivered"):
         reason = "Orders that have already been shipped or delivered cannot be cancelled [SEC-1.1]. You can request a return after delivery."
-    elif action == "return_order" and status != "Delivered":
-        reason = "Only delivered items can be returned [SEC-2.1]."
+    elif action == "return_order":
+        if status != "Delivered":
+            reason = "Only delivered items can be returned [SEC-2.1]."
+        else:
+            reason = "Standard returns must be requested within 7 days of delivery [SEC-2.5]."
 
     payload = build_blocked_payload(action, order_id, status, reason)
     raw_input = interrupt(payload)

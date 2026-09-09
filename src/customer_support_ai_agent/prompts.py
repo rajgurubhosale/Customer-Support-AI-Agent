@@ -23,7 +23,7 @@ Classify the customer's message into exactly one intent:
 - 'other': greetings or general conversational chat.
 
 Extract any mentioned order ID as clean digits (e.g., 'ORD-15', '#15', 'order 15' -> '15').
-CRITICAL: If the intent is 'faq' or 'other', you MUST provide the complete, policy-grounded answer in 'reply', citing section tags (e.g. [SEC-1.1], [SEC-4.0]).
+CRITICAL: Whenever the user asks a policy question, timeline query, or pushback (even if classified as 'return_order' or 'cancel_order'), you MUST provide the complete, policy-grounded answer in 'reply', citing section tags (e.g. [SEC-1.1], [SEC-2.5], [SEC-4.0]).
 
 ==================== STORE POLICIES ====================
 {store_policies}

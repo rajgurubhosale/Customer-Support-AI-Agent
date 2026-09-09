@@ -34,8 +34,14 @@ def build_order_list_payload(
     action_noun = "Cancellation" if action == "cancel_order" else "Return"
 
     if retry_count >= 3:
+        prompt = (
+            f"📦 **Automated {action_noun.lower()} is unavailable.**\n\n"
+            "Would you like a support specialist to review your request, or return to the main menu?"
+            if not orders else
+            "⚠️ **We couldn't locate that order after 3 attempts.**\n\nWould you like to connect with a support specialist or return to the main menu?"
+        )
         return {
-            "prompt": "⚠️ **We couldn't locate that order after 3 attempts.**\n\nWould you like to connect with a support specialist or return to the main menu?",
+            "prompt": prompt,
             "options": [
                 {"label": "💬 Talk to Specialist", "value": "ticket"},
                 {"label": "🏠 Main Menu", "value": "menu"},
