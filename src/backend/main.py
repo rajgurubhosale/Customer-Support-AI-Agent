@@ -1,6 +1,6 @@
 import threading
 from fastapi import FastAPI
-from customer_support_ai_agent.nodes import load_policy_files
+from customer_support_ai_agent.intent_router import load_policy_files
 from customer_support_ai_agent.prompts import FAQ_SYSTEM_PROMPT
 from customer_support_ai_agent.model import model
 from langchain_core.messages import SystemMessage, HumanMessage
