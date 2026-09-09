@@ -54,7 +54,6 @@ def build_order_list_payload(
         oid = o.get("order_id")
         return {
             "prompt": (
-                f"ℹ️ Sure, I can help you {action_verb} your order.\n\n"
                 f"📦 **You have 1 order eligible for {action_noun.lower()}: ORD-{oid}** ({o.get('status')}, ₹{float(o.get('total_amount', 0)):.2f})\n\n"
                 f"Would you like to {action_verb} items from this order?"
             ),
@@ -70,10 +69,7 @@ def build_order_list_payload(
         f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]}"
         for o in orders
     ])
-    prompt = (
-        f"ℹ️ Sure, I can help you {action_verb} your order.\n\n"
-        f"📦 **Select an order to {action_verb}:**\n\n{cards}"
-    )
+    prompt = f"📦 **Select an order to {action_verb}:**\n\n{cards}"
     options = [
         {"label": f"📦 ORD-{o.get('order_id')}", "value": f"ORD-{o.get('order_id')}"}
         for o in orders

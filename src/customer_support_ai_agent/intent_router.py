@@ -17,19 +17,23 @@ def is_button_signal(user_input: Any) -> Optional[str]:
     Returns: 'menu' | 'confirm' | 'abort' | 'all' | 'ticket' | None
     """
     if isinstance(user_input, dict):
+        # Ignore item selection payloads (these are handled directly in select_items_node)
+        if user_input.get("scope") or user_input.get("items"):
+            return None
+
         val = user_input.get("value") or user_input.get("action")
         val_str = str(val or "").strip().lower()
-        if val_str in ("menu", "main menu", "home", "reset", "start over"):
+        if val_str in ("menu", "main menu", "home", "reset", "start over", "back"):
             return "menu"
         if val_str in ("confirm", "yes", "proceed", "sure"):
             return "confirm"
-        if val_str in ("abort", "no", "keep", "cancel"):
+        if val_str in ("abort", "no", "keep"):
             return "abort"
         if val_str in ("all", "all items", "entire", "whole"):
             return "all"
         if val_str in ("ticket", "human", "specialist"):
             return "ticket"
-        return val_str if val_str else None
+        return None
 
     text = str(user_input or "").strip().lower()
     if text in ("menu", "main menu", "home", "reset", "start over", "back", "exit", "quit", "bye"):
