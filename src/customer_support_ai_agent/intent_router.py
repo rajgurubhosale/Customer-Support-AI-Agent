@@ -1,229 +1,169 @@
-import re
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Any, Literal
+from pydantic import BaseModel, Field
+from langchain_core.messages import SystemMessage, HumanMessage
+
 from customer_support_ai_agent.model import model
-from customer_support_ai_agent.schemas import IntentClassifier, ActionConfirmationClassifier
-from customer_support_ai_agent.prompts import START_NODE_INTENT_SYSTEM_PROMPT, ACTION_CONFIRMATION_SYSTEM_PROMPT
-
-# Lightweight structured LLM classifiers
-classifier_llm = model.with_structured_output(IntentClassifier)
-confirmation_classifier_llm = model.with_structured_output(ActionConfirmationClassifier)
-
-# 0ms Fast Token Filter: Standard UI button clicks that never require an LLM
-BUTTON_TOKENS = {
-    "yes", "no", "all", "all items", "entire", "whole",
-    "back", "menu", "main menu", "exit", "ticket",
-    "1", "2", "3", "4", "keep", "confirm", "confirm it",
-    "yes confirm", "proceed", "go ahead", "do it",
-    "nevermind", "never mind", "abort", "cancel", "stop",
-}
-
-ABORT_TOKENS = {
-    "menu", "main menu", "back", "go back", "exit", "quit", "no", "stop",
-    "cancel", "abort", "nevermind", "never mind", "leave", "home", "reset",
-    "start over", "back to menu", "return to menu", "no thanks", "keep order",
-    "keep", "dont cancel", "dont return", "don't cancel", "don't return",
-}
+from customer_support_ai_agent.schemas import ActionConfirmationClassifier
+from customer_support_ai_agent.prompts import ACTION_CONFIRMATION_SYSTEM_PROMPT
 
 
-def is_abort_intent(user_input: Any) -> bool:
+# =====================================================================
+# 1. DETERMINISTIC BUTTON SIGNAL (0ms, 0 Cost)
+# =====================================================================
+
+def is_button_signal(user_input: Any) -> Optional[str]:
     """
-    Checks if the user wants to cancel the current workflow, go back,
-    or return to the main menu. Matches exact tokens and common conversational phrases.
+    0ms check for literal UI button payloads and standard one-word commands.
+    Returns: 'menu' | 'confirm' | 'abort' | 'all' | 'ticket' | None
     """
-    if not user_input:
-        return False
-    raw_val = user_input.get("value") if isinstance(user_input, dict) else user_input
-    text = str(raw_val or "").strip().lower()
-    if text in ABORT_TOKENS:
-        return True
-    phrases = (
-        "back to menu", "return to menu", "go back", "nevermind", "never mind",
-        "start over", "take me back", "cancel this", "stop this", "leave this",
-        "main menu", "keep my order", "keep order", "don't want to cancel",
-        "dont want to cancel", "back please", "return to main menu"
-    )
-    return any(p in text for p in phrases)
+    if isinstance(user_input, dict):
+        val = user_input.get("value") or user_input.get("action")
+        val_str = str(val or "").strip().lower()
+        if val_str in ("menu", "main menu", "home", "reset", "start over"):
+            return "menu"
+        if val_str in ("confirm", "yes", "proceed", "sure"):
+            return "confirm"
+        if val_str in ("abort", "no", "keep", "cancel"):
+            return "abort"
+        if val_str in ("all", "all items", "entire", "whole"):
+            return "all"
+        if val_str in ("ticket", "human", "specialist"):
+            return "ticket"
+        return val_str if val_str else None
 
-
-def validate_expected_input(user_input: Any, expected_tokens: Set[str]) -> bool:
-    """
-    Tier 1 Fast-Path (0ms, 0 Cost):
-    Validates whether the input directly satisfies the expected choices of the current node
-    (e.g., button clicks like 'yes', 'no', '1', 'all', or an exact expected order ID).
-    """
-    if not user_input:
-        return False
-
-    if is_abort_intent(user_input):
-        return True
-
-    raw_val = user_input.get("value") if isinstance(user_input, dict) else user_input
-    clean_val = str(raw_val or "").strip().lower()
-
-    if clean_val in expected_tokens:
-        return True
-
-    if "__order_id__" in expected_tokens and (clean_val.isdigit() or re.match(r"^(?:order|ord)?\s*[-#]?\s*\d+$", clean_val)):
-        return True
-
-    return False
-
-
-def detect_intent_switch(user_input: Any, current_flow: str) -> Optional[Dict[str, Any]]:
-    """
-    Lightweight LLM Intent Classifier for unexpected free-text input.
-    Detects whether the user is asking a read-only policy FAQ, switching to another action,
-    or requesting human support.
-    """
-    raw_val = user_input.get("value") if isinstance(user_input, dict) else user_input
-    text = str(raw_val or "").strip()
-    if not text or text.lower() in BUTTON_TOKENS:
-        return None
-
-    # Fast regex fallback for order ID digits (e.g. ORD-15, order-15, order 15, #15)
-    id_match = re.search(r"(?:order|ord)\s*[-#]?\s*(\d+)", text, re.I) or re.search(r"#\s*(\d+)", text, re.I)
-    extracted_order_id = id_match.group(1) if id_match else None
-
-    text_lower = text.lower()
-
-    # Fast Tier 2: Keyword & regex matching (0ms, avoids Groq rate-limiting)
-    fast_action = None
-    if any(p in text_lower for p in ("order status", "check status", "track status", "track order", "track package", "where is my order", "my orders", "recent orders")) or (
-        ("check" in text_lower or "track" in text_lower or "where" in text_lower or "status" in text_lower)
-        and ("order" in text_lower or "package" in text_lower or "item" in text_lower)
-    ):
-        return {
-            "type": "faq_query",
-            "action_type": "faq",
-            "question": text,
-            "order_id": extracted_order_id,
-        }
-    elif any(p in text_lower for p in ("human", "agent", "representative", "specialist", "escalate", "support ticket", "raise ticket", "talk to human", "talk to agent")):
-        fast_action = "human_support"
-    elif any(w in text_lower for w in ("cancel", "cancellation", "cancelling")) and not is_abort_intent(text_lower):
-        fast_action = "cancel_order"
-    elif (
-        any(w in text_lower for w in ("return", "returning", "replacement"))
-        and not is_abort_intent(text_lower)
-        and not any(q in text_lower for q in ("how", "what", "policy", "window", "when", "?"))
-    ):
-        fast_action = "return_order"
-
-    if fast_action and fast_action != current_flow:
-        init_msgs = {
-            "cancel_order": "Sure, I can help you cancel your order.",
-            "return_order": "Sure, I can help you request a return.",
-            "human_support": "Connecting you with human customer support...",
-        }
-        transitions = {
-            "cancel_order": "Understood. Switching over to cancel your order instead.",
-            "return_order": "Got it! Let's switch to returning your order instead.",
-            "human_support": "Connecting you with human support...",
-        }
-        msg = init_msgs.get(fast_action, f"Helping you with {fast_action.replace('_', ' ')}.") if current_flow == "open" else transitions.get(fast_action, f"Switching to {fast_action.replace('_', ' ')}...")
-        return {
-            "type": "workflow_switch",
-            "action_type": fast_action,
-            "order_id": extracted_order_id,
-            "transition_message": msg,
-        }
-
-    try:
-        res: IntentClassifier = classifier_llm.invoke([
-            {"role": "system", "content": START_NODE_INTENT_SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ])
-        action = res.action_type
-        order_id = res.order_id or extracted_order_id
-
-        # 1. Read-only Policy or store inquiry
-        if action == "faq":
-            return {
-                "type": "faq_query",
-                "action_type": "faq",
-                "question": text,
-                "order_id": order_id,
-            }
-
-        # 2. Action Trigger or Workflow Switch
-        if action in ("cancel_order", "return_order", "human_support") and action != current_flow:
-            if current_flow == "open":
-                init_msgs = {
-                    "cancel_order": "Sure, I can help you cancel your order.",
-                    "return_order": "Sure, I can help you request a return.",
-                    "human_support": "Connecting you with human customer support...",
-                }
-                msg = init_msgs.get(action, f"Helping you with {action.replace('_', ' ')}.")
-            else:
-                transitions = {
-                    "cancel_order": "Understood. Switching over to cancel your order instead.",
-                    "return_order": "Got it! Let's switch to returning your order instead.",
-                    "human_support": "Connecting you with human support...",
-                }
-                msg = transitions.get(action, f"Switching to {action.replace('_', ' ')}...")
-
-            return {
-                "type": "workflow_switch",
-                "action_type": action,
-                "order_id": order_id,
-                "transition_message": msg,
-            }
-    except Exception as e:
-        print(f"Intent classification notice: {e}")
-
+    text = str(user_input or "").strip().lower()
+    if text in ("menu", "main menu", "home", "reset", "start over", "back", "exit", "quit", "bye"):
+        return "menu"
+    if text in ("confirm", "yes", "y", "proceed", "sure", "ok", "yes confirm", "do it"):
+        return "confirm"
+    if text in ("abort", "no", "n", "keep", "keep order", "nevermind", "never mind", "dont cancel", "don't cancel"):
+        return "abort"
+    if text in ("all", "all items", "entire", "whole", "cancel whole order"):
+        return "all"
+    if text in ("ticket", "human", "agent", "support", "specialist", "escalate"):
+        return "ticket"
     return None
 
 
-def classify_confirmation_intent(
-    user_input: Any,
-    action: str,
+from functools import lru_cache
+from pathlib import Path
+from customer_support_ai_agent.prompts import UNIFIED_SYSTEM_PROMPT, ACTION_CONFIRMATION_SYSTEM_PROMPT
+
+
+@lru_cache(maxsize=1)
+def load_policy_files() -> str:
+    policy_path = Path(__file__).resolve().parents[2] / "docs" / "cancellation_and_return_policy.md"
+    return policy_path.read_text(encoding="utf-8")
+
+
+# =====================================================================
+# 2. GENERAL USER INTENT CLASSIFIER (AI Router)
+# =====================================================================
+
+class UserIntent(BaseModel):
+    intent: Literal[
+        "cancel_order",
+        "return_order",
+        "track_order",
+        "faq",
+        "human_support",
+        "abort",
+        "other",
+    ] = Field(description="The primary detected intent of the customer message.")
+    order_id: Optional[str] = Field(
+        default=None,
+        description="Extracted numeric order ID if user mentioned one (e.g. '15' for 'ORD-15' or '#15').",
+    )
+    reply: Optional[str] = Field(
+        default=None,
+        description="Direct policy-grounded markdown answer citing section tags (e.g. [SEC-1.1], [SEC-4.0]) if intent is 'faq' or 'other'.",
+    )
+
+
+user_intent_llm = model.with_structured_output(UserIntent)
+
+
+def classify_user_intent(user_input: Any) -> UserIntent:
+    """Classifies user free-text messages and answers FAQs with a single unified structured LLM call."""
+    raw_text = user_input.get("value") if isinstance(user_input, dict) else user_input
+    text = str(raw_text or "").strip()
+    if not text:
+        return UserIntent(intent="other", reply="How can I help you today?")
+
+    # Fast check for literal button/abort signals
+    button = is_button_signal(text)
+    if button == "menu" or button == "abort":
+        return UserIntent(intent="abort")
+    if button == "ticket":
+        return UserIntent(intent="human_support")
+
+    system_prompt = UNIFIED_SYSTEM_PROMPT.format(
+        store_policies=load_policy_files()
+    )
+
+    try:
+        return user_intent_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text),
+        ])
+    except Exception as e:
+        print(f"Intent classifier error: {e}")
+        # Deterministic fallback on network error
+        lower = text.lower()
+        if "cancel" in lower:
+            return UserIntent(intent="cancel_order")
+        if "return" in lower:
+            return UserIntent(intent="return_order")
+        if any(w in lower for w in ("track", "status", "where is", "delivery", "orders")):
+            return UserIntent(intent="track_order")
+        if any(w in lower for w in ("human", "agent", "ticket", "specialist")):
+            return UserIntent(intent="human_support")
+        return UserIntent(intent="other")
+
+
+# =====================================================================
+# 3. ISOLATED CONFIRMATION GATE (Strict 0.95 Confidence Floor)
+# =====================================================================
+# RULE: confirm_action_node NEVER calls classify_user_intent.
+# It only calls is_button_signal first, and classify_confirmation second.
+
+confirmation_llm = model.with_structured_output(ActionConfirmationClassifier)
+
+def classify_confirmation(
+    reply: Any,
+    action_noun: str,
     order_id: str,
-    refund_amount: float = 0.0
-) -> ActionConfirmationClassifier:
+    refund_amount: float,
+) -> Optional[bool]:
     """
-    Evaluates confirmation intent using structured LLM classification.
-    Adheres strictly to the zero-ambiguity rule: only confirms if 100% confident.
+    Strict confirmation validator.
+    Returns:
+      True: explicitly confirmed (confidence >= 0.95)
+      False: rejected, aborted, or keeping order
+      None: ambiguous/unclear -> defaults to SAFE NON-EXECUTION
     """
-    raw_val = user_input.get("value") if isinstance(user_input, dict) else user_input
-    clean_val = str(raw_val or "").strip().lower()
+    signal = is_button_signal(reply)
+    if signal == "confirm":
+        return True
+    if signal in ("abort", "menu"):
+        return False
 
-    # Fast-path 1: Direct unambiguous affirmative tokens
-    if clean_val in ("yes", "y", "1", "confirm", "confirm it", "yes confirm", "proceed", "go ahead", "do it"):
-        return ActionConfirmationClassifier(decision="confirm", confidence=1.0, explanation="Direct affirmative button/token")
-    if clean_val in ("no", "n", "2", "back", "menu", "keep", "keep order") or is_abort_intent(clean_val):
-        return ActionConfirmationClassifier(decision="reject", confidence=1.0, explanation="Direct negative button/token")
-
-    action_noun = "Cancellation" if action == "cancel_order" else "Return"
+    text = str(reply or "").strip()
     prompt = ACTION_CONFIRMATION_SYSTEM_PROMPT.format(
         action_noun=action_noun,
         order_id=order_id,
         refund_amount=refund_amount,
     )
-
     try:
-        res: ActionConfirmationClassifier = confirmation_classifier_llm.invoke([
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": str(raw_val or user_input)},
+        res = confirmation_llm.invoke([
+            SystemMessage(content=prompt),
+            HumanMessage(content=text),
         ])
-        return res
+        if res.decision == "confirm" and res.confidence >= 0.95:
+            return True
+        elif res.decision in ("reject", "workflow_switch"):
+            return False
+        return None  # Unclear or FAQ -> do not execute
     except Exception as e:
-        print(f"Confirmation classification notice: {e}")
-        return ActionConfirmationClassifier(
-            decision="unclear",
-            confidence=0.0,
-            explanation=f"Classifier fallback on error: {e}",
-        )
-
-
-def clear_flow_state(state: Dict[str, Any], new_order_id: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Centralized state cleanup when switching workflows.
-    Wipes flow-local keys to prevent data contamination while preserving identity.
-    """
-    return {
-        "order_id": new_order_id or state.get("order_id"),
-        "customer_details": None,
-        "retry_count": 0,
-        "confirmed": None,
-        "context": None,
-    }
+        print(f"Confirmation classifier error: {e}")
+        return None
