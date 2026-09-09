@@ -3,7 +3,7 @@ from langgraph.checkpoint.memory import MemorySaver
 import os
 
 from customer_support_ai_agent.nodes import (
-    open_router_node,
+    start_node,
     order_lookup_node,
     select_items_node,
     confirm_action_node,
@@ -23,7 +23,7 @@ from customer_support_ai_agent.state import CustomerState
 graph = StateGraph(CustomerState)
 
 # 1. Register Core Nodes
-graph.add_node("start_node", open_router_node)
+graph.add_node("start_node", start_node)
 graph.add_node("order_lookup_node", order_lookup_node)
 graph.add_node("select_items_node", select_items_node)
 graph.add_node("confirm_action_node", confirm_action_node)

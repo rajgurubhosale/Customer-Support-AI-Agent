@@ -1,10 +1,13 @@
 from typing import Dict, Any, List, Optional
 
+
+# SHOW MENU PAYLOADS INTERRUPT
 def build_welcome_payload() -> Dict[str, Any]:
     return {
         "prompt": "**Hi! How can I help you today?**\n\n*(You can ask about our store policies, track your orders, or request a return/cancellation)*",
         "options": [],
     }
+
 
 def build_post_action_payload() -> Dict[str, Any]:
     return {

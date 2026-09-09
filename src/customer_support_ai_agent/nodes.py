@@ -14,7 +14,6 @@ from customer_support_ai_agent.intent_router import (
     classify_confirmation,
     load_policy_files,
 )
-from customer_support_ai_agent.schemas import ActionSelectionPayload
 from customer_support_ai_agent.ui_payloads import (
     build_welcome_payload,
     build_post_action_payload,
@@ -48,40 +47,34 @@ def reset_to_menu(message: Optional[str] = None) -> dict:
 # 1. CONVERSATIONAL FRONT DOOR (open_router_node / start_node)
 # =====================================================================
 
-def open_router_node(state: CustomerState) -> dict:
-    """Conversational front door for general inquiries, policy FAQs, and intent handoffs."""
+def start_node(state: CustomerState) -> dict:
+    """Conversational front door for inquiries, FAQs, and intent routing."""
     user_id = int(state.get("user_id") or 1)
     is_post_action = bool(state.get("confirmed"))
 
-    payload = build_post_action_payload() if is_post_action else build_welcome_payload()
+    # 1. Show Screen INTERRUPTS
+    payload = None
+    
+    if is_post_action:
+        payload = build_post_action_payload()
+    else:
+        payload = build_welcome_payload()
+    
+    # PAUSE HERE UNTILL USER CLICKS BUTTON
     raw_input = interrupt(payload)
-    user_msg = str(raw_input.get("value") if isinstance(raw_input, dict) else raw_input or "").strip()
 
-    # 1. Deterministic button clicks (0ms, 0 AI)
+
+    # 2. Fast 0ms Button Exit (Keeps Main Menu instant with $0 cost)
     button = is_button_signal(raw_input)
     if button == "menu":
         return reset_to_menu("Understood! Returning to the main menu.")
     if button == "ticket":
         return {"action_type": "human_support", "confirmed": None}
 
-    # Fast check for quick remaining orders chip (0ms, 0 AI)
-    if user_msg in ("remaining orders", "What are my remaining orders?"):
-        orders = get_order_history(user_id) or []
-        active = [o for o in orders if o.get("status") not in ("Cancelled", "Returned")]
-        if active:
-            cards = "\n\n".join([
-                f"• **Order #ORD-{o.get('order_id')}** — Status: **{o.get('status')}**\n"
-                f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]} | 🚚 Est. Delivery: {str(o.get('delivery_date'))[:10] if o.get('delivery_date') else 'Pending'}"
-                for o in active
-            ])
-            msg = f"📦 **Here are your remaining active orders:**\n\n{cards}\n\nLet me know if you need anything else!"
-        else:
-            msg = "📦 **You have no remaining active orders.** All previous orders have been completed or cancelled."
-        return {"messages": [AIMessage(content=msg)], "confirmed": None, "action_type": None}
-
-    # 2. Free-text message -> Unified AI Router (Classifies & Answers in 1 shot)
+    # 3. Unified AI Call (Classifies intent AND answers FAQs in 1 shot)
     decision = classify_user_intent(raw_input)
 
+    # 4. State Updates Based on AI Decision
     if decision.intent == "abort":
         return reset_to_menu("No problem! Have a wonderful day! 👋")
 
@@ -100,10 +93,10 @@ def open_router_node(state: CustomerState) -> dict:
         if orders:
             cards = "\n\n".join([
                 f"• **Order #ORD-{o.get('order_id')}** — Status: **{o.get('status')}**\n"
-                f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]} | 🚚 Est. Delivery: {str(o.get('delivery_date'))[:10] if o.get('delivery_date') else 'Pending'}"
+                f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]}"
                 for o in orders[:4]
             ])
-            msg = f"📦 **Here are your recent orders:**\n\n{cards}\n\nLet me know if you need help with cancellations, returns, or tracking!"
+            msg = f"📦 **Here are your recent orders:**\n\n{cards}"
         else:
             msg = "📦 You don't have any past orders on record."
         return {"messages": [AIMessage(content=msg)], "confirmed": None, "action_type": None}
@@ -111,12 +104,10 @@ def open_router_node(state: CustomerState) -> dict:
     if decision.intent == "human_support":
         return {"action_type": "human_support", "confirmed": None}
 
-    # Policy FAQ or other conversational reply (answered directly in 1 shot)
-    answer = decision.reply or "I can assist with store policies, orders, cancellations, and returns. How can I help you today?"
+    # 5. Policy FAQs & Conversational chat (AI generated reply)
+    answer = decision.reply or "How can I help you with your order today?"
     return {"messages": [AIMessage(content=answer)], "confirmed": None, "action_type": None}
 
-
-start_node = open_router_node
 
 
 # =====================================================================
