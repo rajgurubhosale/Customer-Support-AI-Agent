@@ -1,10 +1,10 @@
-
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
 
-
-# 1. Strict Schema: LLM is restricted ONLY to these 5 choices
+####################################3
+# REMOVE THIS BUT FIRST CHECK WHICH SCHEMA TO KEEP IN INTENT ROUTER BEFORE DELETING
+############################333
 class IntentClassifier(BaseModel):
     action_type: Literal[
         "cancel_order",
@@ -25,29 +25,9 @@ class IntentClassifier(BaseModel):
     )
 
 
-
-# 2. Structured Mutation Schemas for Cancel & Return Execution
-class SelectedItemSchema(BaseModel):
-    item_id: int
-    quantity: int = Field(default=1, gt=0)
-
-
-class ActionSelectionPayload(BaseModel):
-    action: Optional[str] = "cancel"
-    scope: Optional[Literal["all", "partial"]] = "partial"
-    items: list[SelectedItemSchema] = Field(default_factory=list)
-
-
-class OrderMutationContext(BaseModel):
-    order_id: str
-    action_type: Literal["cancel_order", "return_order"]
-    action_scope: Literal["all", "partial"]
-    items: list[dict]
-    refund_amount: float
-
-
 # 3. Ultra-Conservative Confirmation Intent Classifier
 class ActionConfirmationClassifier(BaseModel):
+    """Ultra-conservative confirmation intent classifier."""
     decision: Literal["confirm", "reject", "faq", "workflow_switch", "unclear"] = Field(
         description=(
             "Strict classification of user's confirmation reply. "
@@ -65,4 +45,3 @@ class ActionConfirmationClassifier(BaseModel):
         default="",
         description="Brief 1-sentence reason for the decision."
     )
-

@@ -27,6 +27,8 @@ CRITICAL: Whenever the user asks a policy question, timeline query, or pushback 
 
 ==================== STORE POLICIES ====================
 {store_policies}
+
+You MUST output your response strictly as a valid JSON object matching the required schema.
 """
 
 FAQ_SYSTEM_PROMPT = UNIFIED_SYSTEM_PROMPT
@@ -34,7 +36,8 @@ START_NODE_INTENT_SYSTEM_PROMPT = UNIFIED_SYSTEM_PROMPT
 
 
 ACTION_CONFIRMATION_SYSTEM_PROMPT = """You are a strict, ultra-conservative confirmation validator for an e-commerce customer support AI agent.
-The user is at the final confirmation step for a sensitive action: {action_noun} for Order #{order_id} with an estimated refund of ₹{refund_amount:.2f}.
+The user is at the final confirmation step for a sensitive transaction (cancellation or return).
+Context details regarding the target order, action type, and refund amount are provided in the user's message.
 
 Your job is to determine whether the user is 100% explicitly and unequivocally confirming this action.
 
@@ -90,4 +93,6 @@ CRITICAL ZERO-AMBIGUITY RULE:
   Examples:
   - "actually return ORD-12 instead"
   - "speak to human agent"
+
+You MUST output your response strictly as a valid JSON object matching the required schema.
 """

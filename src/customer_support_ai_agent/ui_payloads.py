@@ -11,14 +11,10 @@ def build_welcome_payload() -> Dict[str, Any]:
 
 def build_post_action_payload() -> Dict[str, Any]:
     return {
-        "prompt": (
-            "**Is there anything else I can help you with today?**\n\n"
-            "*(You can view your updated orders, check refund timelines, or return to the main menu)*"
-        ),
+        "prompt": "",
         "options": [
-            {"label": "📦 View Remaining Orders", "value": "remaining orders"},
-            {"label": "📖 Refund Policy Info", "value": "When will I receive my refund?"},
-            {"label": "🏠 Main Menu", "value": "menu"},
+            {"label": "📦 View Other Orders", "value": "track_order"},
+            {"label": "👋 I'm All Done (Exit)", "value": "exit"},
         ],
     }
 
@@ -31,60 +27,36 @@ def build_faq_payload(answer: str) -> Dict[str, Any]:
 def build_order_list_payload(
     action: str,
     orders: List[Dict[str, Any]],
-    retry_count: int = 0,
 ) -> Dict[str, Any]:
     action_verb = "cancel" if action == "cancel_order" else "return"
     action_noun = "Cancellation" if action == "cancel_order" else "Return"
 
-    if retry_count >= 3:
-        prompt = (
-            f"📦 **Automated {action_noun.lower()} is unavailable.**\n\n"
-            "Would you like a support specialist to review your request, or return to the main menu?"
-            if not orders else
-            "⚠️ **We couldn't locate that order after 3 attempts.**\n\nWould you like to connect with a support specialist or return to the main menu?"
-        )
+    if not orders:
         return {
-            "prompt": prompt,
+            "prompt": f"📦 **You don't have any orders eligible for {action_noun.lower()}.**\n\nOnly orders in *Placed* or *Processing* status can be cancelled, and delivered orders within 7 days can be returned.",
             "options": [
                 {"label": "💬 Talk to Specialist", "value": "ticket"},
                 {"label": "🏠 Main Menu", "value": "menu"},
             ],
         }
 
-    if not orders:
-        return {
-            "prompt": f"📦 **You don't have any orders eligible for {action_noun.lower()}.**\n\nOnly orders in *Placed* or *Processing* status can be cancelled, and delivered orders within 7 days can be returned.",
-            "options": [{"label": "🏠 Main Menu", "value": "menu"}],
-        }
-
-    # Auto-prompt when customer has exactly 1 eligible order
-    if len(orders) == 1:
-        o = orders[0]
-        oid = o.get("order_id")
-        return {
-            "prompt": (
-                f"📦 **You have 1 order eligible for {action_noun.lower()}: ORD-{oid}** ({o.get('status')}, ₹{float(o.get('total_amount', 0)):.2f})\n\n"
-                f"Would you like to {action_verb} items from this order?"
-            ),
-            "options": [
-                {"label": f"✅ Yes, {action_verb.title()} ORD-{oid}", "value": f"ORD-{oid}"},
-                {"label": "🔙 Back to Main Menu", "value": "menu"},
-            ],
-        }
-
-    # Multiple orders
     cards = "\n\n".join([
         f"• **Order #ORD-{o.get('order_id')}** — Status: **{o.get('status')}**\n"
         f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]}"
         for o in orders
     ])
-    prompt = f"📦 **Select an order to {action_verb}:**\n\n{cards}"
+
     options = [
         {"label": f"📦 ORD-{o.get('order_id')}", "value": f"ORD-{o.get('order_id')}"}
         for o in orders
     ]
+    options.append({"label": "💬 Talk to Specialist", "value": "ticket"})
     options.append({"label": "🔙 Back to Main Menu", "value": "menu"})
-    return {"prompt": prompt, "options": options}
+
+    return {
+        "prompt": f"📦 **Select an order to {action_verb}:**\n\n{cards}",
+        "options": options,
+    }
 
 def build_item_selection_payload(
     order_id: str,
@@ -164,7 +136,10 @@ def build_receipt_message(
         f"✅ **Order #{order_id} — {action_done.title()} Successfully!**\n\n"
         f"**Items {action_done.title()}:**\n{items_summary}\n\n"
         f"💰 **Total Refund:** ₹{refund_amount:.2f}\n\n"
-        f"A refund of ₹{refund_amount:.2f} has been initiated to your original payment method (takes 4–7 business days) {sec_tag}."
+        f"A refund of ₹{refund_amount:.2f} has been initiated to your original payment method (takes 4–7 business days) {sec_tag}.\n\n"
+        f"---\n"
+        f"**Is there anything else I can help you with today?**\n\n"
+        f"*(You are completely free to ask anything about your refund, other orders, or store policies!)*"
     )
 
 def build_blocked_payload(

@@ -9,7 +9,6 @@ class CustomerState(TypedDict, total=False):
 
     order_id: Optional[str]
     customer_details: Optional[Dict[str, Any]]
-    retry_count: int
     confirmed: Optional[bool]
 
     context: Optional[Dict[str, Any]]

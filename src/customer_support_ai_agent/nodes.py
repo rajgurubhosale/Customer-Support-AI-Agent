@@ -1,18 +1,13 @@
-from pathlib import Path
-from datetime import datetime, date
-from typing import Optional, Dict, Any, List
-import json
-
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+import re
+from typing import Optional, Any
+from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 from customer_support_ai_agent.state import CustomerState
 from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history
 from customer_support_ai_agent.intent_router import (
-    is_button_signal,
     classify_user_intent,
     classify_confirmation,
-    load_policy_files,
 )
 from customer_support_ai_agent.ui_payloads import (
     build_welcome_payload,
@@ -25,7 +20,27 @@ from customer_support_ai_agent.ui_payloads import (
     build_escalation_message,
 )
 
-RETURN_WINDOW_DAYS = 7
+
+# =====================================================================
+# HELPER FUNCTIONS
+# =====================================================================
+
+def _get_input_text(raw_input: Any) -> str:
+    """Extract clean string text whether input is a dict (button click) or str (typed chat)."""
+    if isinstance(raw_input, dict):
+        return str(raw_input.get("value") or raw_input.get("action") or "").strip()
+    return str(raw_input or "").strip()
+
+
+def _resolve_order(val: Any, user_id: int) -> Optional[dict]:
+    """Extracts order digits and verifies against DB. Returns state update if found."""
+    match = re.match(r"^(?:ord-?|#|order\s*)?(\d+)$", str(val or "").strip(), re.IGNORECASE)
+    if match:
+        order_id = match.group(1)
+        order = get_order_with_items(int(order_id), customer_id=user_id)
+        if order:
+            return {"customer_details": order, "order_id": order_id}
+    return None
 
 
 def reset_to_menu(message: Optional[str] = None) -> dict:
@@ -34,7 +49,6 @@ def reset_to_menu(message: Optional[str] = None) -> dict:
         "action_type": None,
         "order_id": None,
         "customer_details": None,
-        "retry_count": 0,
         "confirmed": None,
         "context": None,
     }
@@ -43,38 +57,70 @@ def reset_to_menu(message: Optional[str] = None) -> dict:
     return out
 
 
+def _check_global_commands(user_text: str, message: Optional[str] = None) -> Optional[dict]:
+    """Universal navigation interceptor for menu and human support."""
+    text = user_text.lower().strip()
+    if text in ("menu", "main menu", "back", "abort"):
+        return reset_to_menu(message)
+    if text in ("ticket", "human", "specialist", "agent"):
+        return {"action_type": "human_support", "confirmed": None}
+    return None
+
+
+def _get_order_details_message(order_id: int, user_id: int) -> str:
+    """Fetch order with items and return a clean markdown card or not-found notice."""
+    order = get_order_with_items(order_id, customer_id=user_id)
+    if not order:
+        return f"⚠️ I couldn't find order #ORD-{order_id} under your account."
+
+    items = order.get("items", [])
+    items_summary = "\n".join([
+        f"  • {it.get('product_name', 'Item')} — Qty: {it.get('quantity', 1)} (₹{float(it.get('unit_price', 0)):.2f})"
+        for it in items
+    ]) or "  • (No item details found)"
+
+    return (
+        f"📦 **Order Details: #ORD-{order['order_id']}**\n"
+        f"• **Status:** **{order.get('status')}**\n"
+        f"• **Order Date:** {str(order.get('order_date'))[:10]}\n"
+        f"• **Total Amount:** ₹{float(order.get('total_amount', 0)):.2f}\n\n"
+        f"🛒 **Items in this order:**\n{items_summary}"
+    )
+
+
+def _to_item_dict(it: dict, qty: Optional[int] = None) -> dict:
+    """Standardize an active order item into a clean dictionary."""
+    return {
+        "item_id": it.get("order_item_id") or it.get("id"),
+        "name": it.get("product_name", "Item"),
+        "quantity": int(qty if qty is not None else it.get("quantity", 1)),
+        "unit_price": float(it.get("unit_price", 0)),
+    }
+
+
 # =====================================================================
-# 1. CONVERSATIONAL FRONT DOOR (open_router_node / start_node)
+# 1. CONVERSATIONAL FRONT DOOR (start_node)
 # =====================================================================
 
 def start_node(state: CustomerState) -> dict:
     """Conversational front door for inquiries, FAQs, and intent routing."""
+    
     user_id = int(state.get("user_id") or 1)
+
     is_post_action = bool(state.get("confirmed"))
 
-    # 1. Show Screen INTERRUPTS
-    payload = None
-    
-    if is_post_action:
-        payload = build_post_action_payload()
-    else:
-        payload = build_welcome_payload()
-    
-    # PAUSE HERE UNTILL USER CLICKS BUTTON
+    payload = build_post_action_payload() if is_post_action else build_welcome_payload()
     raw_input = interrupt(payload)
+    user_text = _get_input_text(raw_input)
+    lower_text = user_text.lower()
 
+    cmd = _check_global_commands(lower_text)
+    if cmd:
+        return cmd
 
-    # 2. Fast 0ms Button Exit (Keeps Main Menu instant with $0 cost)
-    button = is_button_signal(raw_input)
-    if button == "menu":
-        return reset_to_menu("Understood! Returning to the main menu.")
-    if button == "ticket":
-        return {"action_type": "human_support", "confirmed": None}
-
-    # 3. Unified AI Call (Classifies intent AND answers FAQs in 1 shot)
+    # Unified AI Call (Classifies intent AND answers FAQs in 1 shot)
     decision = classify_user_intent(raw_input)
 
-    # 4. State Updates Based on AI Decision
     if decision.intent == "abort":
         return reset_to_menu("No problem! Have a wonderful day! 👋")
 
@@ -84,11 +130,16 @@ def start_node(state: CustomerState) -> dict:
             "action_type": decision.intent,
             "order_id": decision.order_id,
             "confirmed": None,
-            "retry_count": 0,
             "messages": [AIMessage(content=f"ℹ️ Sure, I can help you {verb} your order.")],
         }
 
     if decision.intent == "track_order":
+        # 1. Specific order inquiry (e.g. "details of ORD-74")
+        if decision.order_id:
+            msg = _get_order_details_message(int(decision.order_id), user_id)
+            return {"messages": [AIMessage(content=msg)], "confirmed": None, "action_type": None}
+
+        # 2. General tracking inquiry (show recent orders list)
         orders = get_order_history(user_id) or []
         if orders:
             cards = "\n\n".join([
@@ -104,10 +155,9 @@ def start_node(state: CustomerState) -> dict:
     if decision.intent == "human_support":
         return {"action_type": "human_support", "confirmed": None}
 
-    # 5. Policy FAQs & Conversational chat (AI generated reply)
+    # Policy FAQs & Conversational chat (AI generated reply)
     answer = decision.reply or "How can I help you with your order today?"
     return {"messages": [AIMessage(content=answer)], "confirmed": None, "action_type": None}
-
 
 
 # =====================================================================
@@ -118,104 +168,58 @@ def order_lookup_node(state: CustomerState) -> dict:
     """Finds customer order. Fully deterministic for button clicks and order IDs."""
     user_id = int(state.get("user_id") or 1)
     action = state.get("action_type") or "cancel_order"
-    retry_count = int(state.get("retry_count") or 0)
 
     # If order_id was already extracted in previous step
-    order_id = state.get("order_id")
-    if order_id:
-        cleaned_id = str(order_id).lower().replace("ord-", "").replace("order-", "").replace("#", "").strip()
-        if cleaned_id.isdigit():
-            order = get_order_with_items(int(cleaned_id), customer_id=user_id)
-            if order:
-                return {"customer_details": order, "order_id": str(cleaned_id), "retry_count": 0}
+    found_order = _resolve_order(state.get("order_id"), user_id)
+    if found_order:
+        return found_order
 
-    # Fetch eligible orders
+    # Fetch orders for this customer
     all_orders = get_order_history(user_id) or []
-    today = date.today()
     if action == "cancel_order":
         eligible = [o for o in all_orders if o.get("status") in ("Placed", "Processing", "Partially_Cancelled")]
     else:
-        eligible = []
-        for o in all_orders:
-            if o.get("status") in ("Delivered", "Partially_Returned"):
-                d_date = o.get("delivery_date")
-                if d_date:
-                    d = d_date.date() if isinstance(d_date, datetime) else d_date
-                    if (today - d).days <= RETURN_WINDOW_DAYS:
-                        eligible.append(o)
+        eligible = [o for o in all_orders if o.get("status") in ("Delivered", "Partially_Returned")]
 
-    payload = build_order_list_payload(action, eligible, retry_count)
+    payload = build_order_list_payload(action, eligible)
     raw_input = interrupt(payload)
 
-    # 1. Deterministic button signals (0ms, 0 AI)
-    button = is_button_signal(raw_input)
-    if button in ("menu", "abort"):
-        return reset_to_menu("Returned to main menu.")
-    if button == "ticket":
-        return {"action_type": "human_support"}
+    # 1. Direct button signals
+    input_str = _get_input_text(raw_input)
+    btn_text = input_str.lower()
+    cmd = _check_global_commands(btn_text)
+    if cmd:
+        return cmd
 
-    # 2. Deterministic order ID detection (0ms, 0 AI)
-    input_str = str(raw_input.get("value") if isinstance(raw_input, dict) else raw_input or "").strip()
-    target_id = None
+    # 2. Fast order ID check (Button click or clean ID, with single-order shortcut)
+    candidate = eligible[0]["order_id"] if (len(eligible) == 1 and btn_text in ("yes", "y", "sure", "ok", "proceed", "1")) else btn_text
+    found_order = _resolve_order(candidate, user_id)
+    if found_order:
+        return found_order
 
-    if len(eligible) == 1 and input_str.lower() in ("yes", "y", "sure", "proceed", "1", "ok", f"ord-{eligible[0]['order_id']}".lower()):
-        target_id = str(eligible[0]["order_id"])
-    elif input_str.isdigit() and 1 <= int(input_str) <= len(eligible):
-        target_id = str(eligible[int(input_str) - 1]["order_id"])
-    else:
-        cleaned = input_str.lower().replace("ord-", "").replace("order-", "").replace("#", "").strip()
-        if cleaned.isdigit():
-            target_id = cleaned
-
-    if target_id and target_id.isdigit():
-        order = get_order_with_items(int(target_id), customer_id=user_id)
-        if order:
-            return {"customer_details": order, "order_id": str(target_id), "retry_count": 0}
-
-    # 3. ONLY if input is NOT a button and NOT an order ID, call AI for conversational queries
+    # 3. Conversational queries handled by AI
     decision = classify_user_intent(raw_input)
     if decision.intent == "abort":
-        return reset_to_menu("Understood! Returning to main menu.")
+        return reset_to_menu()
+        
     if decision.intent == "human_support":
         return {"action_type": "human_support"}
-    if decision.intent == "faq":
-        faq_ans = decision.reply or "Please let me know if you have questions regarding our store policies."
-        return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
     if decision.intent in ("cancel_order", "return_order") and decision.intent != action:
-        return {"action_type": decision.intent, "order_id": decision.order_id, "retry_count": 0}
-    if decision.order_id and decision.order_id.isdigit():
-        order = get_order_with_items(int(decision.order_id), customer_id=user_id)
-        if order:
-            return {"customer_details": order, "order_id": str(decision.order_id), "retry_count": 0}
+        return {"action_type": decision.intent, "order_id": decision.order_id}
+    found_order = _resolve_order(decision.order_id, user_id)
+    if found_order:
+        return found_order
 
-    # If no orders are eligible, answer user pushback/question without showing "order not found"
+    # If user asked an FAQ or policy question, show the AI answer
+    if decision.reply:
+        return {"messages": [AIMessage(content=f"ℹ️ {decision.reply}")]}
+
+    # If no eligible orders, prevent false "order not found" error
     if not eligible:
-        borderline = []
-        for o in all_orders:
-            if o.get("status") in ("Delivered", "Partially_Returned"):
-                d_date = o.get("delivery_date")
-                if d_date:
-                    d = d_date.date() if isinstance(d_date, datetime) else d_date
-                    if 8 <= (today - d).days <= 14:
-                        borderline.append(o)
+        return {"messages": [AIMessage(content="ℹ️ You don't have any orders eligible for this action.")]}
 
-        user_text = str(raw_input.get("value") if isinstance(raw_input, dict) else raw_input or "").lower()
-        is_borderline_mention = any(w in user_text for w in ("8 day", "9 day", "10 day", "11 day", "12 day", "13 day", "14 day", "past 7", "over 7", "more than 7", "8 days", "9 days", "10 days", "14 days"))
-
-        if (borderline or is_borderline_mention) and action == "return_order":
-            reply = decision.reply or "Standard return policy is strictly 7 days from delivery [SEC-2.5]."
-            msg = f"ℹ️ {reply}\n\nSince your delivery is within the 8–14 day borderline window, you may request an exception review from a support specialist."
-            return {"retry_count": 3, "messages": [AIMessage(content=msg)]}
-
-        reply = decision.reply or ("Orders past the return window cannot be returned [SEC-2.5]." if action == "return_order" else "Orders that have already shipped or delivered cannot be cancelled [SEC-1.1].")
-        return {"retry_count": 0, "messages": [AIMessage(content=f"ℹ️ {reply}")]}
-
-    # Order not found when eligible orders exist
-    new_retry = retry_count + 1
-    if new_retry >= 3:
-        return {"retry_count": new_retry}
+    # Order ID not recognized from eligible list
     return {
-        "retry_count": new_retry,
         "messages": [AIMessage(content="⚠️ I couldn't find an order matching that ID in your account. Please select one of your eligible orders below:")],
     }
 
@@ -235,95 +239,53 @@ def select_items_node(state: CustomerState) -> dict:
 
     items = order.get("items", [])
     active_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned")] or items
+    items_map = {str(it.get("order_item_id") or it.get("id")): it for it in active_items}
 
     payload = build_item_selection_payload(order_id, action, active_items)
     raw_input = interrupt(payload)
+    user_text = _get_input_text(raw_input)
+    lower_text = user_text.lower()
 
-    # 1. Deterministic Back / Menu signal (0ms, 0 AI)
-    if isinstance(raw_input, dict):
-        if raw_input.get("action") == "back" or raw_input.get("value") in ("menu", "main menu"):
-            return reset_to_menu("Cancelled item selection. Returning to main menu.")
-    elif str(raw_input).strip().lower() in ("menu", "main menu", "home", "reset", "back", "exit", "quit"):
-        return reset_to_menu("Cancelled item selection. Returning to main menu.")
+    # 1. Deterministic Back / Menu signal
+    cmd = _check_global_commands(user_text, message="Cancelled item selection. Returning to main menu.")
+    if cmd:
+        return cmd
 
-    # 2. Deterministic item selection payload (0ms, 0 AI)
-    is_whole = False
-    is_partial_submission = False
-    if isinstance(raw_input, dict):
-        if raw_input.get("scope") == "all" or raw_input.get("value") == "all":
-            is_whole = True
-        elif raw_input.get("items"):
-            is_partial_submission = True
-    elif str(raw_input).strip().lower() in ("all", "all items", "entire", "whole", "cancel whole order", "return whole order"):
-        is_whole = True
-
-    if is_whole:
+    # 2. Deterministic partial item selection payload (from UI checkboxes)
+    if isinstance(raw_input, dict) and raw_input.get("items"):
+        scope = "partial"
+        # Only include valid items belonging to this order (drops unmatched/phantom IDs)
         selected_items = [
-            {
-                "item_id": it.get("order_item_id") or it.get("id"),
-                "name": it.get("product_name", "Item"),
-                "quantity": int(it.get("quantity", 1)),
-                "unit_price": float(it.get("unit_price", 0)),
-            }
-            for it in active_items
+            _to_item_dict(items_map[str(s["item_id"])], s.get("quantity", 1))
+            for s in raw_input.get("items", [])
+            if str(s.get("item_id")) in items_map
         ]
-        refund = sum(it["quantity"] * it["unit_price"] for it in selected_items)
-        return {
-            "context": {
-                "order_id": order_id,
-                "items": selected_items,
-                "refund_amount": refund,
-                "scope": "all",
-            }
-        }
+    else:
+        # 3. Conversational queries / FAQs (only when not explicitly selecting all)
+        is_explicit_all = (
+            (isinstance(raw_input, dict) and (raw_input.get("scope") == "all" or raw_input.get("value") == "all"))
+            or lower_text in ("all", "all items", "entire", "whole", "cancel whole order", "return whole order")
+        )
+        if not is_explicit_all:
+            decision = classify_user_intent(raw_input)
+            if decision.intent == "abort":
+                return reset_to_menu("Understood! Returning to main menu.")
+            if decision.intent == "faq":
+                faq_ans = decision.reply or "Please let me know if you have questions regarding our store policies."
+                return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
 
-    if is_partial_submission:
-        selected_items = []
-        for sel in raw_input.get("items", []):
-            orig = next((it for it in active_items if (it.get("order_item_id") or it.get("id")) == sel.get("item_id")), None)
-            price = float(orig.get("unit_price", 0)) if orig else 0.0
-            name = orig.get("product_name", "Item") if orig else "Item"
-            selected_items.append({
-                "item_id": sel.get("item_id"),
-                "name": name,
-                "quantity": sel.get("quantity", 1),
-                "unit_price": price,
-            })
-        refund = sum(it["quantity"] * it["unit_price"] for it in selected_items)
-        return {
-            "context": {
-                "order_id": order_id,
-                "items": selected_items,
-                "refund_amount": refund,
-                "scope": "partial",
-            }
-        }
+        # 4. Default / Whole Order: select all active items
+        scope = "all"
+        selected_items = [_to_item_dict(it) for it in active_items]
 
-    # 3. ONLY if input is NOT a button and NOT an item selection, call AI for conversational queries
-    decision = classify_user_intent(raw_input)
-    if decision.intent == "abort":
-        return reset_to_menu("Understood! Returning to main menu.")
-    if decision.intent == "faq":
-        faq_ans = decision.reply or "Please let me know if you have questions regarding our store policies."
-        return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
-
-    # Default fallback: select all
-    selected_items = [
-        {
-            "item_id": it.get("order_item_id") or it.get("id"),
-            "name": it.get("product_name", "Item"),
-            "quantity": int(it.get("quantity", 1)),
-            "unit_price": float(it.get("unit_price", 0)),
-        }
-        for it in active_items
-    ]
+    # Single exit point for refund calculation and context packaging
     refund = sum(it["quantity"] * it["unit_price"] for it in selected_items)
     return {
         "context": {
             "order_id": order_id,
             "items": selected_items,
             "refund_amount": refund,
-            "scope": "all",
+            "scope": scope,
         }
     }
 
@@ -345,16 +307,22 @@ def confirm_action_node(state: CustomerState) -> dict:
     payload = build_confirmation_payload(order_id, action, selected_items, refund)
     raw_input = interrupt(payload)
 
-    # 1. Deterministic button signals (0ms, 0 AI)
-    button = is_button_signal(raw_input)
-    if button == "confirm":
+    # 1. Simple button signals
+    input_str = _get_input_text(raw_input)
+    btn_text = input_str.lower()
+    if btn_text in ("confirm", "yes", "proceed"):
         return {"confirmed": True}
-    if button in ("abort", "menu"):
+
+    cmd = _check_global_commands(btn_text, message=f"No problem! Order #ORD-{order_id} remains active with no changes made.")
+    if cmd:
+        return cmd
+
+    if btn_text in ("keep", "no"):
         return reset_to_menu(f"No problem! Order #ORD-{order_id} remains active with no changes made.")
 
     # 2. If user typed free text, use isolated confirmation validator
     is_confirmed = classify_confirmation(
-        reply=raw_input,
+        reply=input_str,
         action_noun=action_noun,
         order_id=order_id,
         refund_amount=refund,
@@ -373,7 +341,6 @@ def confirm_action_node(state: CustomerState) -> dict:
         return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
 
     # Ambiguous -> Safe non-execution
-    raw_text = raw_input.get("value") if isinstance(raw_input, dict) else str(raw_input or "")
     return reset_to_menu(
         f"⚠️ For your protection, order {action_noun.lower()} requires 100% clear confirmation. "
         f"No changes were made to Order #ORD-{order_id}."
@@ -443,9 +410,10 @@ def policy_blocked_node(state: CustomerState) -> dict:
     payload = build_blocked_payload(action, order_id, status, reason)
     raw_input = interrupt(payload)
 
-    button = is_button_signal(raw_input)
-    if button == "ticket":
-        return {"action_type": "human_support"}
+    btn_text = _get_input_text(raw_input).lower()
+    cmd = _check_global_commands(btn_text, message="Returned to main menu.")
+    if cmd:
+        return cmd
     return reset_to_menu("Returned to main menu.")
 
 
@@ -456,12 +424,4 @@ def policy_blocked_node(state: CustomerState) -> dict:
 def human_escalate_node(state: CustomerState) -> dict:
     """Creates a support ticket and returns confirmation."""
     user_id = int(state.get("user_id") or 1)
-    msg = build_escalation_message(user_id)
-    return {
-        "messages": [AIMessage(content=msg)],
-        "action_type": None,
-        "order_id": None,
-        "customer_details": None,
-        "confirmed": None,
-        "context": None,
-    }
+    return reset_to_menu(build_escalation_message(user_id))

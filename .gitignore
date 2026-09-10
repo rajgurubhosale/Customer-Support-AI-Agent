@@ -11,13 +11,19 @@ src\customer_support_ai_agent\current.md
 .venv
 notebooks/temp.ipynb
 /docs
+notebooks\myplan.md
+notebooks\plan.md
 GEMINI.
 md
+tests
 .env
 src/customer_support_ai_agent/current.md
 skills
+README.md
+CODEBASE_GUIDE.md
 
 datasets
 src/customer_support_ai_agent/__pycache__
 
 .vscode
+notebooks\plan.md
