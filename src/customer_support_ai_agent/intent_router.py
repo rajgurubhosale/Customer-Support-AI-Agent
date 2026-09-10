@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from customer_support_ai_agent.model import model
-from customer_support_ai_agent.schemas import ActionConfirmationClassifier
+from customer_support_ai_agent.schemas import ActionConfirmationClassifier, UserInput
 from customer_support_ai_agent.prompts import UNIFIED_SYSTEM_PROMPT, ACTION_CONFIRMATION_SYSTEM_PROMPT
 
 
@@ -44,12 +44,10 @@ user_intent_llm = model.with_structured_output(UserIntent, method="json_mode")
 
 def classify_user_intent(user_input: Any) -> UserIntent:
     """Classifies user free-text messages and answers FAQs with a single unified structured LLM call."""
-    
-    if isinstance(user_input,dict):
-        raw_text  = user_input.get('value')
+    if isinstance(user_input, UserInput):
+        text = user_input.text.strip()
     else:
-        raw_text  = user_input        
-    text = str(raw_text or "").strip()
+        text = str(user_input or "").strip()
 
     if not text:
         return UserIntent(intent="other", reply="How can I help you today?")

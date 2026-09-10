@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 from customer_support_ai_agent.state import CustomerState
+from customer_support_ai_agent.schemas import UserInput
 from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history
 from customer_support_ai_agent.intent_router import (
     classify_user_intent,
@@ -25,11 +26,15 @@ from customer_support_ai_agent.ui_payloads import (
 # HELPER FUNCTIONS
 # =====================================================================
 
-def _get_input_text(raw_input: Any) -> str:
-    """Extract clean string text whether input is a dict (button click) or str (typed chat)."""
+def _as_user_input(raw_input: Any) -> UserInput:
+    """Normalize interrupt return into UserInput if not already normalized."""
+    if isinstance(raw_input, UserInput):
+        return raw_input
     if isinstance(raw_input, dict):
-        return str(raw_input.get("value") or raw_input.get("action") or "").strip()
-    return str(raw_input or "").strip()
+        text = str(raw_input.get("value") or raw_input.get("action") or "").strip()
+        action = raw_input.get("action") or (raw_input.get("value") if str(raw_input.get("value", "")).lower() in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order") else None)
+        return UserInput(text=text, action=action, data=raw_input)
+    return UserInput(text=str(raw_input or "").strip())
 
 
 def _resolve_order(val: Any, user_id: int) -> Optional[dict]:
@@ -110,16 +115,15 @@ def start_node(state: CustomerState) -> dict:
     is_post_action = bool(state.get("confirmed"))
 
     payload = build_post_action_payload() if is_post_action else build_welcome_payload()
-    raw_input = interrupt(payload)
-    user_text = _get_input_text(raw_input)
-    lower_text = user_text.lower()
+    user_input = _as_user_input(interrupt(payload))
+    lower_text = user_input.text.lower()
 
-    cmd = _check_global_commands(lower_text)
+    cmd = _check_global_commands(user_input.action or lower_text)
     if cmd:
         return cmd
 
     # Unified AI Call (Classifies intent AND answers FAQs in 1 shot)
-    decision = classify_user_intent(raw_input)
+    decision = classify_user_intent(user_input.text)
 
     if decision.intent == "abort":
         return reset_to_menu("No problem! Have a wonderful day! 👋")
@@ -182,23 +186,22 @@ def order_lookup_node(state: CustomerState) -> dict:
         eligible = [o for o in all_orders if o.get("status") in ("Delivered", "Partially_Returned")]
 
     payload = build_order_list_payload(action, eligible)
-    raw_input = interrupt(payload)
+    user_input = _as_user_input(interrupt(payload))
+    lower_text = user_input.text.lower()
 
-    # 1. Direct button signals
-    input_str = _get_input_text(raw_input)
-    btn_text = input_str.lower()
-    cmd = _check_global_commands(btn_text)
+    # 1. Direct button signals / global commands
+    cmd = _check_global_commands(user_input.action or lower_text)
     if cmd:
         return cmd
 
     # 2. Fast order ID check (Button click or clean ID, with single-order shortcut)
-    candidate = eligible[0]["order_id"] if (len(eligible) == 1 and btn_text in ("yes", "y", "sure", "ok", "proceed", "1")) else btn_text
+    candidate = eligible[0]["order_id"] if (len(eligible) == 1 and lower_text in ("yes", "y", "sure", "ok", "proceed", "1")) else user_input.text
     found_order = _resolve_order(candidate, user_id)
     if found_order:
         return found_order
 
     # 3. Conversational queries handled by AI
-    decision = classify_user_intent(raw_input)
+    decision = classify_user_intent(user_input.text)
     if decision.intent == "abort":
         return reset_to_menu()
         
@@ -242,32 +245,33 @@ def select_items_node(state: CustomerState) -> dict:
     items_map = {str(it.get("order_item_id") or it.get("id")): it for it in active_items}
 
     payload = build_item_selection_payload(order_id, action, active_items)
-    raw_input = interrupt(payload)
-    user_text = _get_input_text(raw_input)
-    lower_text = user_text.lower()
+    user_input = _as_user_input(interrupt(payload))
+    lower_text = user_input.text.lower()
 
     # 1. Deterministic Back / Menu signal
-    cmd = _check_global_commands(user_text, message="Cancelled item selection. Returning to main menu.")
+    cmd = _check_global_commands(user_input.action or lower_text, message="Cancelled item selection. Returning to main menu.")
     if cmd:
         return cmd
 
-    # 2. Deterministic partial item selection payload (from UI checkboxes)
-    if isinstance(raw_input, dict) and raw_input.get("items"):
+    # 2. Deterministic partial item selection payload (from UI steppers/checkboxes)
+    items_payload = user_input.data.get("items")
+    if items_payload:
         scope = "partial"
         # Only include valid items belonging to this order (drops unmatched/phantom IDs)
         selected_items = [
             _to_item_dict(items_map[str(s["item_id"])], s.get("quantity", 1))
-            for s in raw_input.get("items", [])
+            for s in items_payload
             if str(s.get("item_id")) in items_map
         ]
     else:
         # 3. Conversational queries / FAQs (only when not explicitly selecting all)
         is_explicit_all = (
-            (isinstance(raw_input, dict) and (raw_input.get("scope") == "all" or raw_input.get("value") == "all"))
+            user_input.data.get("scope") == "all"
+            or user_input.action == "all"
             or lower_text in ("all", "all items", "entire", "whole", "cancel whole order", "return whole order")
         )
         if not is_explicit_all:
-            decision = classify_user_intent(raw_input)
+            decision = classify_user_intent(user_input.text)
             if decision.intent == "abort":
                 return reset_to_menu("Understood! Returning to main menu.")
             if decision.intent == "faq":
@@ -305,24 +309,23 @@ def confirm_action_node(state: CustomerState) -> dict:
     refund = float(ctx.get("refund_amount", 0.0))
 
     payload = build_confirmation_payload(order_id, action, selected_items, refund)
-    raw_input = interrupt(payload)
+    user_input = _as_user_input(interrupt(payload))
+    lower_text = user_input.text.lower()
 
-    # 1. Simple button signals
-    input_str = _get_input_text(raw_input)
-    btn_text = input_str.lower()
-    if btn_text in ("confirm", "yes", "proceed"):
+    # 1. Simple button signals or affirmative text
+    if user_input.action == "confirm" or lower_text in ("confirm", "yes", "proceed"):
         return {"confirmed": True}
 
-    cmd = _check_global_commands(btn_text, message=f"No problem! Order #ORD-{order_id} remains active with no changes made.")
+    cmd = _check_global_commands(user_input.action or lower_text, message=f"No problem! Order #ORD-{order_id} remains active with no changes made.")
     if cmd:
         return cmd
 
-    if btn_text in ("keep", "no"):
+    if user_input.action in ("keep", "abort") or lower_text in ("keep", "no"):
         return reset_to_menu(f"No problem! Order #ORD-{order_id} remains active with no changes made.")
 
     # 2. If user typed free text, use isolated confirmation validator
     is_confirmed = classify_confirmation(
-        reply=input_str,
+        reply=user_input.text,
         action_noun=action_noun,
         order_id=order_id,
         refund_amount=refund,
@@ -335,7 +338,7 @@ def confirm_action_node(state: CustomerState) -> dict:
         return reset_to_menu(f"No problem! Order #ORD-{order_id} remains active with no changes made.")
 
     # 3. Check if user asked an inline policy question
-    decision = classify_user_intent(raw_input)
+    decision = classify_user_intent(user_input.text)
     if decision.intent == "faq":
         faq_ans = decision.reply or "Please let me know if you have questions regarding our store policies."
         return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
@@ -408,9 +411,9 @@ def policy_blocked_node(state: CustomerState) -> dict:
             reason = "Standard returns must be requested within 7 days of delivery [SEC-2.5]."
 
     payload = build_blocked_payload(action, order_id, status, reason)
-    raw_input = interrupt(payload)
+    user_input = _as_user_input(interrupt(payload))
 
-    btn_text = _get_input_text(raw_input).lower()
+    btn_text = user_input.action or user_input.text.lower()
     cmd = _check_global_commands(btn_text, message="Returned to main menu.")
     if cmd:
         return cmd

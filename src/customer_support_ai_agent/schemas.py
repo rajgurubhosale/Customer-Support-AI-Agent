@@ -1,5 +1,12 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
+
+
+class UserInput(BaseModel):
+    """Canonical user input model normalized at the system boundary."""
+    text: str = ""
+    action: Optional[str] = None
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 ####################################3

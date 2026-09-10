@@ -2,20 +2,45 @@ from typing import Optional, Any
 from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 from customer_support_ai_agent.graph import graph
+from customer_support_ai_agent.schemas import UserInput
 
-#cusomt=threid
-# customer uuid use keun
 # 1. Compile agent ONCE here inside helper
 checkpointer = MemorySaver()
 agent = graph.compile(checkpointer=checkpointer)
+
+
+def normalize_user_input(raw: Any) -> UserInput:
+    """Converts user input (str, dict, or UserInput) into a canonical UserInput model."""
+    if isinstance(raw, UserInput):
+        return raw
+
+    if isinstance(raw, str):
+        text = raw.strip()
+        lower = text.lower()
+        action = lower if lower in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order") else None
+        return UserInput(text=text, action=action, data={})
+
+    if isinstance(raw, dict):
+        text = str(raw.get("value") or raw.get("action") or "").strip()
+        raw_action = raw.get("action")
+        if raw_action:
+            action = str(raw_action)
+        elif raw.get("value") and str(raw.get("value")).lower() in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order"):
+            action = str(raw.get("value")).lower()
+        else:
+            action = None
+        return UserInput(text=text, action=action, data=raw)
+
+    if raw is None:
+        return UserInput()
+
+    return UserInput(text=str(raw).strip(), action=None, data={})
 
 
 def run_graph(graph_input, config):
     """
     Run LangGraph until it finishes or pauses at an interrupt.
     """
-    # list because there could be multiple msg we need to return instead 
-    #  1 since its running the grap
     messages = []
     question = None
 
@@ -26,7 +51,7 @@ def run_graph(graph_input, config):
                 for message in node_output.get("messages", []):
                     messages.append(message.content)
 
-        # Graph paused  (interrupted) and its waiting for user input
+        # Graph paused (interrupted) and is waiting for user input
         if "__interrupt__" in event:
             question = event["__interrupt__"][0].value
 
@@ -41,12 +66,6 @@ def execute_agent_turn(
     thread_id = thread_id or f"user-{user_id}"
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Handle both string and structured dict payloads
-    if isinstance(user_message, str):
-        message = user_message.strip()
-    else:
-        message = user_message
-
     # Check whether conversation already exists
     state = agent.get_state(config)
     is_new_chat = not state.values
@@ -61,19 +80,21 @@ def execute_agent_turn(
         all_messages.extend(messages)
 
         # User already sent a message with first request
-        if message and question:
-            question, messages = run_graph(Command(resume=message), config)
+        if user_message is not None and (not isinstance(user_message, str) or user_message.strip()) and question:
+            normalized = normalize_user_input(user_message)
+            question, messages = run_graph(Command(resume=normalized), config)
             all_messages.extend(messages)
 
     # --------------------------------
     # Existing conversation
     # --------------------------------
     else:
-        if message is None or (isinstance(message, str) and not message.strip()):
+        if user_message is None or (isinstance(user_message, str) and not user_message.strip()):
             # User sent no message (e.g. page refresh) -> return current interrupt question without resuming
             question = state.tasks[0].interrupts[0].value if (state.tasks and state.tasks[0].interrupts) else None
         else:
-            question, messages = run_graph(Command(resume=message), config)
+            normalized = normalize_user_input(user_message)
+            question, messages = run_graph(Command(resume=normalized), config)
             all_messages.extend(messages)
 
     # Get latest graph state

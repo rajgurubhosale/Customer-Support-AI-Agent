@@ -1,6 +1,6 @@
 from customer_support_ai_agent.state import CustomerState
 from datetime import datetime, date
-
+from langgraph.graph import END
 RETURN_WINDOW_DAYS = 7
 
 
@@ -12,7 +12,7 @@ def route_open_router(state: CustomerState) -> str:
     elif action == "human_support":
         return "human_escalate_node"
     elif action == "exit":
-        return "end"
+        return END
 
     return "start_node"
 

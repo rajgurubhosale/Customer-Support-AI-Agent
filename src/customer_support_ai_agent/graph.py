@@ -20,6 +20,7 @@ from customer_support_ai_agent.routes import (
     route_blocked_choice,
 )
 from customer_support_ai_agent.state import CustomerState
+from customer_support_ai_agent.schemas import UserInput
 graph = StateGraph(CustomerState)
 
 # 1. Register Core Nodes
@@ -111,7 +112,8 @@ def main():
         # "Don't start a new graph run. Instead, resume the paused thread 
         # (identified by config's thread_id), and make user_reply be the return value of
         #  whatever interrupt(...) call froze it."
-        next_input = Command(resume=user_reply)
+        user_act = user_reply.lower() if user_reply.lower() in ("confirm", "abort", "back", "menu", "ticket", "exit") else None
+        next_input = Command(resume=UserInput(text=user_reply, action=user_act))
 
 
 if __name__ == "__main__":
