@@ -72,9 +72,6 @@ def classify_user_intent(user_input: Any) -> UserIntent:
 # =====================================================================
 # 3. ISOLATED CONFIRMATION GATE (Strict 0.95 Confidence Floor)
 # =====================================================================
-# RULE: confirm_action_node NEVER calls classify_user_intent.
-# It only calls is_button_signal first, and classify_confirmation second.
-
 confirmation_llm = model.with_structured_output(ActionConfirmationClassifier, method="json_mode")
 
 def classify_confirmation(

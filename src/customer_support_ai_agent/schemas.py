@@ -1,17 +1,68 @@
-from typing import Optional, Literal, Dict, Any
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
+
+
+DIRECT_ACTIONS = frozenset({
+    "confirm",
+    "abort",
+    "back",
+    "menu",
+    "ticket",
+    "human",
+    "exit",
+    "track_order",
+})
 
 
 class UserInput(BaseModel):
     """Canonical user input model normalized at the system boundary."""
+
     text: str = ""
     action: Optional[str] = None
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
-####################################3
-# REMOVE THIS BUT FIRST CHECK WHICH SCHEMA TO KEEP IN INTENT ROUTER BEFORE DELETING
-############################333
+def normalize_user_input(raw: Any) -> UserInput:
+    """Convert text or a UI payload to the stable UserInput contract."""
+    
+    if isinstance(raw, UserInput):
+        return raw
+
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+
+        if text in DIRECT_ACTIONS:
+            action = text
+        else:
+            action = None
+        return UserInput(text=text, action=action, data={}) 
+
+    if isinstance(raw, dict):
+        value = str(raw.get("value") or "").strip()
+        action = str(raw.get("action") or "").strip().lower()
+
+        text = value or action
+
+        if action:
+            action = action.lower()
+            
+        elif value.lower() in DIRECT_ACTIONS:
+            action = value
+        else:
+            action = None
+
+        return UserInput(
+            text=text,
+            action=action,
+            data=raw,
+    )
+    
+    if raw is None:
+        return UserInput()
+
+    return UserInput(text=str(raw).strip(), action=None, data={})
+
+
 class IntentClassifier(BaseModel):
     action_type: Literal[
         "cancel_order",

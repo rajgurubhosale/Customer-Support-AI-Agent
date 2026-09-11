@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
 
 
 # SHOW MENU PAYLOADS INTERRUPT
@@ -29,11 +29,22 @@ def build_order_list_payload(
     orders: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     action_verb = "cancel" if action == "cancel_order" else "return"
-    action_noun = "Cancellation" if action == "cancel_order" else "Return"
 
     if not orders:
+        if action == "cancel_order":
+            prompt = (
+                "📦 **I couldn't find an order eligible for cancellation.**\n\n"
+                "Only orders in an eligible cancellation status can be cancelled."
+            )
+        else:
+            prompt = (
+                "📦 **I couldn't find an order eligible for return.**\n\n"
+                "Returns are available for delivered orders within the "
+                "7-day return window."
+            )
+
         return {
-            "prompt": f"📦 **You don't have any orders eligible for {action_noun.lower()}.**\n\nOnly orders in *Placed* or *Processing* status can be cancelled, and delivered orders within 7 days can be returned.",
+            "prompt": prompt,
             "options": [
                 {"label": "💬 Talk to Specialist", "value": "ticket"},
                 {"label": "🏠 Main Menu", "value": "menu"},
@@ -41,23 +52,30 @@ def build_order_list_payload(
         }
 
     cards = "\n\n".join([
-        f"• **Order #ORD-{o.get('order_id')}** — Status: **{o.get('status')}**\n"
-        f"  💰 Total: ₹{float(o.get('total_amount', 0)):.2f} | 📅 Ordered: {str(o.get('order_date'))[:10]}"
-        for o in orders
+        f"• **Order #ORD-{order.get('order_id')}** — "
+        f"Status: **{order.get('status')}**\n"
+        f"  💰 Total: ₹{float(order.get('total_amount', 0)):.2f} | "
+        f"📅 Ordered: {str(order.get('order_date'))[:10]}"
+        for order in orders
     ])
 
     options = [
-        {"label": f"📦 ORD-{o.get('order_id')}", "value": f"ORD-{o.get('order_id')}"}
-        for o in orders
+        {
+            "label": f"📦 ORD-{order.get('order_id')}",
+            "value": f"ORD-{order.get('order_id')}",
+        }
+        for order in orders
     ]
-    options.append({"label": "💬 Talk to Specialist", "value": "ticket"})
-    options.append({"label": "🔙 Back to Main Menu", "value": "menu"})
+
+    options.extend([
+        {"label": "💬 Talk to Specialist", "value": "ticket"},
+        {"label": "🔙 Back to Main Menu", "value": "menu"},
+    ])
 
     return {
         "prompt": f"📦 **Select an order to {action_verb}:**\n\n{cards}",
         "options": options,
     }
-
 def build_item_selection_payload(
     order_id: str,
     action: str,

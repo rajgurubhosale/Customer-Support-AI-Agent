@@ -1,7 +1,51 @@
-from customer_support_ai_agent.state import CustomerState
-from datetime import datetime, date
+from datetime import date, datetime
+from typing import Any, Iterable
+
 from langgraph.graph import END
+
+from customer_support_ai_agent.state import CustomerState
+
 RETURN_WINDOW_DAYS = 7
+CANCEL_ORDER_STATUSES = ("Placed", "Processing", "Partially_Cancelled")
+RETURN_ORDER_STATUSES = ("Delivered", "Partially_Returned")
+
+
+def order_statuses_for(action: str) -> tuple[str, ...]:
+    """Return the order statuses shown for an action."""
+    if action == "cancel_order":
+        return CANCEL_ORDER_STATUSES
+    if action == "return_order":
+        return RETURN_ORDER_STATUSES
+    return ()
+
+
+def active_items_for(
+    action: str,
+    items: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return items that can still take part in the requested action."""
+    blocked_statuses = {"Cancelled", "Returned"}
+    if action == "return_order":
+        blocked_statuses.add("Return_Requested")
+    return [item for item in items if item.get("item_status") not in blocked_statuses]
+
+
+def order_is_eligible(order: dict[str, Any], action: str) -> bool:
+    """Apply the current deterministic status and return-window rules."""
+    items = order.get("items", [])
+    if order.get("status") not in order_statuses_for(action):
+        return False
+    if items and not active_items_for(action, items):
+        return False
+    if action == "cancel_order":
+        return True
+
+    delivery_date = order.get("delivery_date")
+    if not delivery_date:
+        return False
+    delivered_on = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
+    days_since_delivery = (date.today() - delivered_on).days
+    return 0 <= days_since_delivery <= RETURN_WINDOW_DAYS
 
 
 def route_open_router(state: CustomerState) -> str:
@@ -9,9 +53,9 @@ def route_open_router(state: CustomerState) -> str:
     action = state.get("action_type")
     if action in ("cancel_order", "return_order"):
         return "order_lookup_node"
-    elif action == "human_support":
+    if action == "human_support":
         return "human_escalate_node"
-    elif action == "exit":
+    if action == "exit":
         return END
 
     return "start_node"
@@ -29,32 +73,7 @@ def route_order_lookup(state: CustomerState) -> str:
     if not order:
         return "order_lookup_node"
 
-    status = order.get("status")
-    items = order.get("items", [])
-    active_cancel_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned")]
-    active_return_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned", "Return_Requested")]
-
-    # Cancel Flow
-    if action == "cancel_order":
-        if status in ("Placed", "Processing", "Partially_Cancelled"):
-            if items and not active_cancel_items:
-                return "policy_blocked_node"
-            return "select_items_node"
-        return "policy_blocked_node"
-
-    # Return Flow
-    if action == "return_order":
-        if status in ("Delivered", "Partially_Returned"):
-            delivery_date = order.get("delivery_date")
-            if delivery_date:
-                d_date = delivery_date.date() if isinstance(delivery_date, datetime) else delivery_date
-                if (date.today() - d_date).days <= RETURN_WINDOW_DAYS:
-                    if items and not active_return_items:
-                        return "policy_blocked_node"
-                    return "select_items_node"
-        return "policy_blocked_node"
-
-    return "policy_blocked_node"
+    return "select_items_node" if order_is_eligible(order, action) else "policy_blocked_node"
 
 
 def route_select_items(state: CustomerState) -> str:
@@ -80,7 +99,7 @@ def route_confirm_action(state: CustomerState) -> str:
     if state.get("confirmed") is True:
         if action == "cancel_order":
             return "cancel_order_node"
-        elif action == "return_order":
+        if action == "return_order":
             return "return_order_node"
 
     if action == "human_support":

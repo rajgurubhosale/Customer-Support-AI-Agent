@@ -49,14 +49,20 @@ def get_order_with_items(order_id: int, customer_id: int) -> Optional[dict]:
         return None
 
 
+def get_order_history(customer_id: int,limit: Optional[int] = 5,) -> Optional[list[dict]]:
+    """Return the customer's newest orders."""
 
-def get_order_history(customer_id: int) -> Optional[list[dict]]:
-    ''' return customer order history'''
+    query = """
+        SELECT *
+        FROM orders
+        WHERE customer_id = %s
+        ORDER BY order_date DESC
+        LIMIT %s
+    """
+
+    params = [customer_id, limit]
+
     with db_pool.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM orders WHERE customer_id = %s ORDER BY order_date DESC LIMIT 5",
-                (customer_id,),
-            )
+            cur.execute(query, tuple(params))
             return cur.fetchall()
-

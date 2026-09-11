@@ -12,16 +12,14 @@ src\customer_support_ai_agent\current.md
 notebooks/temp.ipynb
 /docs
 
-
-
+src/codebasewalkthrough
 md
 
 notebooks/myplan.md
 notebooks/plan.md
-tests/
 GEMINI.md
 
-
+tests
 .env
 src/customer_support_ai_agent/current.md
 skills

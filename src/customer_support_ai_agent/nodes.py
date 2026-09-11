@@ -1,10 +1,10 @@
 import re
-from typing import Optional, Any
+from typing import Any, Optional
 from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 from customer_support_ai_agent.state import CustomerState
-from customer_support_ai_agent.schemas import UserInput
+from customer_support_ai_agent.schemas import normalize_user_input
 from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history
 from customer_support_ai_agent.intent_router import (
     classify_user_intent,
@@ -20,22 +20,15 @@ from customer_support_ai_agent.ui_payloads import (
     build_blocked_payload,
     build_escalation_message,
 )
-
+from customer_support_ai_agent.routes import active_items_for, order_statuses_for
+from customer_support_ai_agent.routes import (
+    active_items_for,
+    order_is_eligible,
+)
 
 # =====================================================================
 # HELPER FUNCTIONS
 # =====================================================================
-
-def _as_user_input(raw_input: Any) -> UserInput:
-    """Normalize interrupt return into UserInput if not already normalized."""
-    if isinstance(raw_input, UserInput):
-        return raw_input
-    if isinstance(raw_input, dict):
-        text = str(raw_input.get("value") or raw_input.get("action") or "").strip()
-        action = raw_input.get("action") or (raw_input.get("value") if str(raw_input.get("value", "")).lower() in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order") else None)
-        return UserInput(text=text, action=action, data=raw_input)
-    return UserInput(text=str(raw_input or "").strip())
-
 
 def _resolve_order(val: Any, user_id: int) -> Optional[dict]:
     """Extracts order digits and verifies against DB. Returns state update if found."""
@@ -103,6 +96,46 @@ def _to_item_dict(it: dict, qty: Optional[int] = None) -> dict:
     }
 
 
+def _validate_item_selection(
+    selections: Any,
+    items_by_id: dict[str, dict],
+) -> tuple[list[dict], Optional[str]]:
+    """Validate a partial selection against the current order."""
+    if not isinstance(selections, list) or not selections:
+        return [], "Please select at least one item and quantity."
+
+    selected_items = []
+    seen_ids = set()
+    for selection in selections:
+        if not isinstance(selection, dict):
+            return [], "One of the selected items is invalid. Please try again."
+
+        item_id = str(selection.get("item_id") or "")
+        item = items_by_id.get(item_id)
+        if not item or item_id in seen_ids:
+            return [], "One of the selected items is invalid. Please try again."
+
+        raw_quantity = selection.get("quantity")
+        if isinstance(raw_quantity, bool):
+            return [], "Every selected quantity must be a whole number."
+        try:
+            quantity = int(raw_quantity)
+        except (TypeError, ValueError):
+            return [], "Every selected quantity must be a whole number."
+
+        if isinstance(raw_quantity, float) and not raw_quantity.is_integer():
+            return [], "Every selected quantity must be a whole number."
+
+        maximum = int(item.get("quantity", 1))
+        if quantity < 1 or quantity > maximum:
+            return [], f"Quantity for item #{item_id} must be between 1 and {maximum}."
+
+        seen_ids.add(item_id)
+        selected_items.append(_to_item_dict(item, quantity))
+
+    return selected_items, None
+
+
 # =====================================================================
 # 1. CONVERSATIONAL FRONT DOOR (start_node)
 # =====================================================================
@@ -112,10 +145,19 @@ def start_node(state: CustomerState) -> dict:
     
     user_id = int(state.get("user_id") or 1)
 
+    # its for starting the welcome or if the action is confirmed like return or cancel
+    # then show the exit nothing else
+
     is_post_action = bool(state.get("confirmed"))
 
-    payload = build_post_action_payload() if is_post_action else build_welcome_payload()
-    user_input = _as_user_input(interrupt(payload))
+    if is_post_action:
+        payload = build_post_action_payload()
+    else:
+        payload = build_welcome_payload()
+    
+    
+    user_input = normalize_user_input(interrupt(payload))
+
     lower_text = user_input.text.lower()
 
     cmd = _check_global_commands(user_input.action or lower_text)
@@ -130,11 +172,23 @@ def start_node(state: CustomerState) -> dict:
 
     if decision.intent in ("cancel_order", "return_order"):
         verb = "cancel" if decision.intent == "cancel_order" else "return"
+
+        messages = []
+
+        # Keep the policy answer when the message contains both
+        # a question and an action request.
+        if decision.reply:
+            messages.append(AIMessage(content=decision.reply))
+
+        messages.append(
+            AIMessage(content=f"ℹ️ Sure, I can help you {verb} your order.")
+        )
+
         return {
             "action_type": decision.intent,
             "order_id": decision.order_id,
             "confirmed": None,
-            "messages": [AIMessage(content=f"ℹ️ Sure, I can help you {verb} your order.")],
+            "messages": messages,
         }
 
     if decision.intent == "track_order":
@@ -179,14 +233,15 @@ def order_lookup_node(state: CustomerState) -> dict:
         return found_order
 
     # Fetch orders for this customer
-    all_orders = get_order_history(user_id) or []
-    if action == "cancel_order":
-        eligible = [o for o in all_orders if o.get("status") in ("Placed", "Processing", "Partially_Cancelled")]
-    else:
-        eligible = [o for o in all_orders if o.get("status") in ("Delivered", "Partially_Returned")]
-
+    all_orders = get_order_history(user_id, limit=None) or []
+    eligible = [
+        order
+        for order in all_orders
+        if order_is_eligible(order, action)
+    ][:5]
+    
     payload = build_order_list_payload(action, eligible)
-    user_input = _as_user_input(interrupt(payload))
+    user_input = normalize_user_input(interrupt(payload))
     lower_text = user_input.text.lower()
 
     # 1. Direct button signals / global commands
@@ -241,11 +296,11 @@ def select_items_node(state: CustomerState) -> dict:
         order = get_order_with_items(int(order_id), customer_id=user_id) or {}
 
     items = order.get("items", [])
-    active_items = [it for it in items if it.get("item_status") not in ("Cancelled", "Returned")] or items
+    active_items = active_items_for(action, items)
     items_map = {str(it.get("order_item_id") or it.get("id")): it for it in active_items}
 
     payload = build_item_selection_payload(order_id, action, active_items)
-    user_input = _as_user_input(interrupt(payload))
+    user_input = normalize_user_input(interrupt(payload))
     lower_text = user_input.text.lower()
 
     # 1. Deterministic Back / Menu signal
@@ -254,15 +309,18 @@ def select_items_node(state: CustomerState) -> dict:
         return cmd
 
     # 2. Deterministic partial item selection payload (from UI steppers/checkboxes)
-    items_payload = user_input.data.get("items")
-    if items_payload:
+    is_partial_submission = user_input.data.get("scope") == "partial" or "items" in user_input.data
+    if is_partial_submission:
         scope = "partial"
-        # Only include valid items belonging to this order (drops unmatched/phantom IDs)
-        selected_items = [
-            _to_item_dict(items_map[str(s["item_id"])], s.get("quantity", 1))
-            for s in items_payload
-            if str(s.get("item_id")) in items_map
-        ]
+        selected_items, error = _validate_item_selection(
+            user_input.data.get("items"),
+            items_map,
+        )
+        if error:
+            return {
+                "context": None,
+                "messages": [AIMessage(content=f"⚠️ {error} No changes were made.")],
+            }
     else:
         # 3. Conversational queries / FAQs (only when not explicitly selecting all)
         is_explicit_all = (
@@ -274,13 +332,27 @@ def select_items_node(state: CustomerState) -> dict:
             decision = classify_user_intent(user_input.text)
             if decision.intent == "abort":
                 return reset_to_menu("Understood! Returning to main menu.")
+            if decision.intent == "human_support":
+                return {"action_type": "human_support", "context": None}
             if decision.intent == "faq":
                 faq_ans = decision.reply or "Please let me know if you have questions regarding our store policies."
                 return {"messages": [AIMessage(content=f"💡 **Policy Info:** {faq_ans}")]}
+            return {
+                "context": None,
+                "messages": [AIMessage(
+                    content="⚠️ Please use the quantity selectors or choose the whole-order option. No changes were made."
+                )],
+            }
 
         # 4. Default / Whole Order: select all active items
         scope = "all"
         selected_items = [_to_item_dict(it) for it in active_items]
+
+    if not selected_items:
+        return {
+            "context": None,
+            "messages": [AIMessage(content="⚠️ No eligible items were selected. No changes were made.")],
+        }
 
     # Single exit point for refund calculation and context packaging
     refund = sum(it["quantity"] * it["unit_price"] for it in selected_items)
@@ -300,7 +372,6 @@ def select_items_node(state: CustomerState) -> dict:
 
 def confirm_action_node(state: CustomerState) -> dict:
     """Strict confirmation gate. Deterministic for buttons, isolated 0.95 floor for text."""
-    user_id = int(state.get("user_id") or 1)
     action = state.get("action_type") or "cancel_order"
     action_noun = "Cancellation" if action == "cancel_order" else "Return"
     ctx = state.get("context") or {}
@@ -309,7 +380,7 @@ def confirm_action_node(state: CustomerState) -> dict:
     refund = float(ctx.get("refund_amount", 0.0))
 
     payload = build_confirmation_payload(order_id, action, selected_items, refund)
-    user_input = _as_user_input(interrupt(payload))
+    user_input = normalize_user_input(interrupt(payload))
     lower_text = user_input.text.lower()
 
     # 1. Simple button signals or affirmative text
@@ -411,7 +482,7 @@ def policy_blocked_node(state: CustomerState) -> dict:
             reason = "Standard returns must be requested within 7 days of delivery [SEC-2.5]."
 
     payload = build_blocked_payload(action, order_id, status, reason)
-    user_input = _as_user_input(interrupt(payload))
+    user_input = normalize_user_input(interrupt(payload))
 
     btn_text = user_input.action or user_input.text.lower()
     cmd = _check_global_commands(btn_text, message="Returned to main menu.")

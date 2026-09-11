@@ -1,6 +1,5 @@
-from langgraph.graph import START, END, StateGraph
+from langgraph.graph import START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
-import os
 
 from customer_support_ai_agent.nodes import (
     start_node,
@@ -21,6 +20,7 @@ from customer_support_ai_agent.routes import (
 )
 from customer_support_ai_agent.state import CustomerState
 from customer_support_ai_agent.schemas import UserInput
+
 graph = StateGraph(CustomerState)
 
 # 1. Register Core Nodes

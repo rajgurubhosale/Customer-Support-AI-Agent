@@ -1,40 +1,12 @@
-from typing import Optional, Any
+from typing import Any, Optional
 from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 from customer_support_ai_agent.graph import graph
-from customer_support_ai_agent.schemas import UserInput
+from customer_support_ai_agent.schemas import normalize_user_input
 
 # 1. Compile agent ONCE here inside helper
 checkpointer = MemorySaver()
 agent = graph.compile(checkpointer=checkpointer)
-
-
-def normalize_user_input(raw: Any) -> UserInput:
-    """Converts user input (str, dict, or UserInput) into a canonical UserInput model."""
-    if isinstance(raw, UserInput):
-        return raw
-
-    if isinstance(raw, str):
-        text = raw.strip()
-        lower = text.lower()
-        action = lower if lower in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order") else None
-        return UserInput(text=text, action=action, data={})
-
-    if isinstance(raw, dict):
-        text = str(raw.get("value") or raw.get("action") or "").strip()
-        raw_action = raw.get("action")
-        if raw_action:
-            action = str(raw_action)
-        elif raw.get("value") and str(raw.get("value")).lower() in ("confirm", "abort", "back", "menu", "ticket", "human", "exit", "track_order"):
-            action = str(raw.get("value")).lower()
-        else:
-            action = None
-        return UserInput(text=text, action=action, data=raw)
-
-    if raw is None:
-        return UserInput()
-
-    return UserInput(text=str(raw).strip(), action=None, data={})
 
 
 def run_graph(graph_input, config):

@@ -61,19 +61,21 @@ BACKEND_URL = "http://127.0.0.1:8000"
 # Streamlit reruns this script whenever the user interacts
 # with the UI, so we store important conversation data here.
 
-if "user_id" not in st.session_state:
-    st.session_state.user_id = 29
+st.session_state.setdefault("user_id", 29)
+st.session_state.setdefault("messages", [])
+st.session_state.setdefault("options", [])
+st.session_state.setdefault("ui_data", None)
+st.session_state.setdefault(
+    "thread_id",
+    f"user-{st.session_state.user_id}-{uuid.uuid4().hex[:6]}",
+)
 
-if "messages" not in st.session_state:
+
+def reset_conversation():
+    """Clear visible chat state and start a new graph thread."""
     st.session_state.messages = []
-
-if "options" not in st.session_state:
     st.session_state.options = []
-
-if "ui_data" not in st.session_state:
     st.session_state.ui_data = None
-
-if "thread_id" not in st.session_state:
     st.session_state.thread_id = (
         f"user-{st.session_state.user_id}-{uuid.uuid4().hex[:6]}"
     )
@@ -120,6 +122,21 @@ def get_orders():
     return response.json().get("orders", [])
 
 
+def apply_backend_response(data: dict):
+    """Store one backend response using the existing UI state contract."""
+    known_prefixes = ("✅", "📦", "💬", "⚠️", "❌", "💡", "•", "ℹ️")
+    for notice in data.get("messages", []):
+        content = notice if notice.startswith(known_prefixes) else f"ℹ️ {notice}"
+        st.session_state.messages.append({"role": "assistant", "content": content})
+
+    ai_reply = data.get("ai_response", "")
+    if ai_reply:
+        st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+
+    st.session_state.options = data.get("options") or []
+    st.session_state.ui_data = data.get("ui_data")
+
+
 # ============================================================
 # 5. SIDEBAR — USER SETTINGS
 # ============================================================
@@ -136,34 +153,17 @@ new_user_id = st.sidebar.number_input(
 
 # If the customer changes, start a fresh conversation.
 if new_user_id != st.session_state.user_id:
-
     st.session_state.user_id = new_user_id
-
-    st.session_state.thread_id = (
-        f"user-{new_user_id}-{uuid.uuid4().hex[:6]}"
-    )
-
-    st.session_state.messages = []
-    st.session_state.options = []
-    st.session_state.ui_data = None
-
+    reset_conversation()
     st.rerun()
 
 
 # Reset the current conversation.
 if st.sidebar.button(
     "🔄 Reset Conversation",
-    use_container_width=True
+    width="stretch",
 ):
-
-    st.session_state.messages = []
-    st.session_state.options = []
-    st.session_state.ui_data = None
-
-    st.session_state.thread_id = (
-        f"user-{st.session_state.user_id}-{uuid.uuid4().hex[:6]}"
-    )
-
+    reset_conversation()
     st.rerun()
 
 
@@ -220,10 +220,7 @@ except requests.RequestException:
     )
 
 
-
-# ============================================================
-# 4. HANDLE A USER ACTION
-# ============================================================
+# HANDLE A USER ACTION
 # Both kinds of input eventually come here:
 #
 #   - User types something
@@ -252,6 +249,7 @@ def handle_user_submission(
     # What the user sees in the chat history
     if display_label:
         display_text = display_label
+        
     elif isinstance(payload, dict):
         if payload.get("action") in ("back", "cancel"):
             display_text = "🔙 Go Back"
@@ -272,72 +270,38 @@ def handle_user_submission(
         "content": display_text,
     })
 
-    # Clear previous options and ui_data
-    st.session_state.options = []
-    st.session_state.ui_data = None
+    previous_options = st.session_state.options
+    previous_ui_data = st.session_state.ui_data
 
     try:
-
         with st.spinner("AI Agent is processing..."):
-
-            # Send payload to FastAPI
             data = chat_with_backend(payload)
 
-        # Save intermediate messages
-        for notice in data.get("messages", []):
-            formatted_notice = notice if any(notice.startswith(sym) for sym in ("✅", "📦", "💬", "⚠️", "❌", "💡", "•", "ℹ️")) else f"ℹ️ {notice}"
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": formatted_notice,
-            })
-
-        # Save main AI response
-        ai_reply = data.get("ai_response", "")
-        if ai_reply:
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": ai_reply,
-            })
-
-        # Save structured interactive data and options
-        st.session_state.options = data.get("options") or []
-        st.session_state.ui_data = data.get("ui_data")
+        apply_backend_response(data)
 
     except requests.RequestException as e:
-
+        st.session_state.options = previous_options
+        st.session_state.ui_data = previous_ui_data
         st.error(f"Error communicating with backend: {e}")
+        return
 
-    # Rerun the app so the new messages/options appear.
     st.rerun()
 
 
 
 
 
-# ============================================================
-# 8. START THE CONVERSATION
-# ============================================================
+
+# START THE CONVERSATION
 # When the chat history is empty, this is the first request
 # sent to the backend.
 
 if not st.session_state.messages:
-
     try:
-
         data = chat_with_backend()
-
-        ai_reply = data.get("ai_response", "")
-        if ai_reply:
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": ai_reply,
-            })
-
-        st.session_state.options = data.get("options") or []
-        st.session_state.ui_data = data.get("ui_data")
+        apply_backend_response(data)
 
     except requests.RequestException as e:
-
         st.error(f"Could not connect to backend: {e}")
 
 
@@ -431,7 +395,7 @@ if ui_data and ui_data.get("type") == "item_quantity_selection":
             f"✅ Confirm {action_noun}",
             type="primary",
             disabled=confirm_disabled,
-            use_container_width=True,
+            width="stretch",
             key=f"confirm_btn_{len(st.session_state.messages)}"
         ):
             clean_payload_items = [{"item_id": s["item_id"], "quantity": s["quantity"]} for s in selected_items]
@@ -442,7 +406,7 @@ if ui_data and ui_data.get("type") == "item_quantity_selection":
 
         if btn_col2.button(
             f"❌ {action_verb.title()} Whole Order",
-            use_container_width=True,
+            width="stretch",
             key=f"whole_order_btn_{len(st.session_state.messages)}"
         ):
             handle_user_submission(
@@ -452,7 +416,7 @@ if ui_data and ui_data.get("type") == "item_quantity_selection":
 
         if btn_col3.button(
             "🔙 Back to Menu",
-            use_container_width=True,
+            width="stretch",
             key=f"back_btn_{len(st.session_state.messages)}"
         ):
             handle_user_submission(
@@ -474,7 +438,7 @@ elif st.session_state.options:
             opt = st.session_state.options[0]
             label = opt.get("label", str(opt)) if isinstance(opt, dict) else str(opt)
             val = opt.get("value", str(opt)) if isinstance(opt, dict) else str(opt)
-            if cols[0].button(label, key=f"option_0_{len(st.session_state.messages)}", use_container_width=True):
+            if cols[0].button(label, key=f"option_0_{len(st.session_state.messages)}", width="stretch"):
                 handle_user_submission(val, display_label=label)
         else:
             cols_per_row = 2 if num_opts > 2 else num_opts
@@ -489,7 +453,7 @@ elif st.session_state.options:
                     if cols[col_idx].button(
                         label,
                         key=f"option_{overall_idx}_{len(st.session_state.messages)}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         handle_user_submission(
                             val,
