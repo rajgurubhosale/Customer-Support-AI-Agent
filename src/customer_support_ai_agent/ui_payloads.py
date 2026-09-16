@@ -2,7 +2,17 @@ from typing import Any, Dict, List
 
 
 # SHOW MENU PAYLOADS INTERRUPT
-def build_welcome_payload() -> Dict[str, Any]:
+def build_welcome_payload(is_followup: bool = False) -> Dict[str, Any]:
+    """
+    Constructs the initial greeting prompt for new chats, or a shorter 
+    follow-up prompt when continuing an existing conversation.
+    """
+    if is_followup:
+        return {
+            "prompt": "**Tell me what you'd like to do next.**",
+            "options": [],
+        }
+
     return {
         "prompt": "**Hi! How can I help you today?**\n\n*(You can ask about our store policies, track your orders, or request a return/cancellation)*",
         "options": [],
@@ -18,11 +28,6 @@ def build_post_action_payload() -> Dict[str, Any]:
         ],
     }
 
-def build_faq_payload(answer: str) -> Dict[str, Any]:
-    return {
-        "prompt": answer,
-        "options": [{"label": "🏠 Main Menu", "value": "menu"}],
-    }
 
 def build_order_list_payload(
     action: str,
@@ -46,6 +51,7 @@ def build_order_list_payload(
         return {
             "prompt": prompt,
             "options": [
+                {"label": "📦 View Recent Orders", "value": "track_order"},
                 {"label": "💬 Talk to Specialist", "value": "ticket"},
                 {"label": "🏠 Main Menu", "value": "menu"},
             ],
@@ -163,13 +169,11 @@ def build_receipt_message(
 def build_blocked_payload(
     action: str,
     order_id: str,
-    status: str,
     reason: str = "",
 ) -> Dict[str, Any]:
-    action_done = "cancelled" if action == "cancel_order" else "returned"
+    action_noun = "Cancellation" if action == "cancel_order" else "Return"
     prompt = (
-        f"⚠️ **Order #ORD-{order_id} cannot be {action_done}.**\n\n"
-        f"Current Status: **{status}**\n"
+        f"⚠️ **{action_noun} Unavailable for Order #ORD-{order_id}**\n\n"
         f"{reason}\n\n"
         f"Would you like to connect with a support specialist or return to the main menu?"
     )

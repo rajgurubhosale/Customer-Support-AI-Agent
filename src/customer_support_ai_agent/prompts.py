@@ -23,76 +23,15 @@ Classify the customer's message into exactly one intent:
 - 'other': greetings or general conversational chat.
 
 Extract any mentioned order ID as clean digits (e.g., 'ORD-15', '#15', 'order 15' -> '15').
-CRITICAL: Whenever the user asks a policy question, timeline query, or pushback (even if classified as 'return_order' or 'cancel_order'), you MUST provide the complete, policy-grounded answer in 'reply', citing section tags (e.g. [SEC-1.1], [SEC-2.5], [SEC-4.0]).
+
+==================== REPLY GENERATION RULES ====================
+- For a pure cancellation or return request with no explicit policy question, set 'reply' to null.
+- Provide 'reply' only when the customer explicitly asks a policy/timeline question or challenges a policy, including when the primary intent is 'cancel_order' or 'return_order'.
+- Keep 'reply' focused on the customer's exact question and limit it to at most two concise sentences with relevant section tags.
+- Never ask the customer for an order ID and never describe the next workflow step in 'reply'. The deterministic workflow handles order lookup, selection, and confirmation.
 
 ==================== STORE POLICIES ====================
 {store_policies}
-
-You MUST output your response strictly as a valid JSON object matching the required schema.
-"""
-
-FAQ_SYSTEM_PROMPT = UNIFIED_SYSTEM_PROMPT
-START_NODE_INTENT_SYSTEM_PROMPT = UNIFIED_SYSTEM_PROMPT
-
-
-ACTION_CONFIRMATION_SYSTEM_PROMPT = """You are a strict, ultra-conservative confirmation validator for an e-commerce customer support AI agent.
-The user is at the final confirmation step for a sensitive transaction (cancellation or return).
-Context details regarding the target order, action type, and refund amount are provided in the user's message.
-
-Your job is to determine whether the user is 100% explicitly and unequivocally confirming this action.
-
-CRITICAL ZERO-AMBIGUITY RULE:
-- ONLY output decision="confirm" with confidence=1.0 if the user is 100% CERTAIN, UNAMBIGUOUS, and EXPLICITLY confirming the action.
-  Allowed examples of "confirm":
-  - "confirm it"
-  - "confirm"
-  - "yes confirm"
-  - "yes please"
-  - "proceed"
-  - "go ahead"
-  - "do it"
-  - "yes proceed"
-  - "please cancel it" / "cancel it" (when action is cancel)
-  - "please return it" / "return it" (when action is return)
-  - "yes"
-  - "sure"
-
-- IF THERE IS EVEN 5% AMBIGUITY, HESITATION, DOUBT, CONDITIONALITY, OR UNCLEAR MEANING:
-  You MUST NOT output "confirm"! Output "unclear" with confidence < 0.95 instead.
-  Examples of "unclear" (DO NOT CONFIRM):
-  - "i guess"
-  - "maybe"
-  - "confirm if it's free"
-  - "what happens next?"
-  - "ok but wait"
-  - "sure if refund is fast"
-  - "i think so"
-  - "why?"
-  - "is that right?"
-  - random or vague remarks
-
-- If the user is explicitly rejecting, saying no, keeping the order, or aborting:
-  Output decision="reject".
-  Examples of "reject":
-  - "no"
-  - "don't do it"
-  - "keep my order"
-  - "abort"
-  - "stop"
-  - "nevermind"
-  - "back to menu"
-
-- If the user is asking a store policy or order question:
-  Output decision="faq".
-  Examples:
-  - "how long will refund take?"
-  - "will I get shipping charges back?"
-
-- If the user wants to switch to a completely different action:
-  Output decision="workflow_switch".
-  Examples:
-  - "actually return ORD-12 instead"
-  - "speak to human agent"
 
 You MUST output your response strictly as a valid JSON object matching the required schema.
 """

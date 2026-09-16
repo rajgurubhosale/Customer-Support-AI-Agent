@@ -11,10 +11,11 @@ src\customer_support_ai_agent\current.md
 .venv
 notebooks/temp.ipynb
 /docs
-
+FUTURE_IMPLEMENT_PLAN.md
 src/codebasewalkthrough
 md
-
+areadme.md
+implementthis.md
 notebooks/myplan.md
 notebooks/plan.md
 GEMINI.md
