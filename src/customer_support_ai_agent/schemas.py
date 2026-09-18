@@ -1,5 +1,6 @@
 from typing import Any, Dict, Literal, Optional
-from pydantic import BaseModel, Field, StrictInt, StrictStr
+from pydantic import BaseModel, Field, field_validator
+
 
 
 DIRECT_ACTIONS = frozenset({
@@ -52,9 +53,8 @@ class UserInput(BaseModel):
 class SelectedItemInput(BaseModel):
     """One item and quantity submitted by the item-selection UI."""
 
-    item_id: StrictInt | StrictStr
-    quantity: int = Field(gt=0, strict=True)
-
+    item_id: str | int
+    quantity: int = Field(gt=0)
 
 class PartialItemSelection(BaseModel):
     """Validated payload for a partial cancellation or return."""
@@ -62,10 +62,20 @@ class PartialItemSelection(BaseModel):
     scope: Literal["partial"] = "partial"
     items: list[SelectedItemInput] = Field(min_length=1)
 
+    @field_validator("items")
+    @classmethod
+    def check_unique_items(cls, items: list[SelectedItemInput]) -> list[SelectedItemInput]:
+        ids = [str(it.item_id) for it in items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate items selected in payload.")
+        return items
+
+
 
 def normalize_user_input(raw: Any) -> UserInput:
-    """Convert text or a UI payload to the stable UserInput contract."""
-    
+    """
+    Convert text or a UI payload to the stable UserInput contract.
+    """
     if isinstance(raw, UserInput):
         return raw
 
@@ -85,7 +95,7 @@ def normalize_user_input(raw: Any) -> UserInput:
             action = action.lower()
             
         elif value.lower() in DIRECT_ACTIONS:
-            action = value
+            action = value.lower()
         else:
             action = None
 

@@ -1,5 +1,16 @@
 from typing import Any, Dict, List
 
+# Reusable Standard Buttons
+BTN_MENU = {"label": "🔙 Back to Main Menu", "value": "menu"}
+BTN_SPECIALIST = {"label": "💬 Talk to Specialist", "value": "ticket"}
+BTN_TRACK = {"label": "📦 View Recent Orders", "value": "track_order"}
+BTN_EXIT = {"label": "👋 I'm All Done (Exit)", "value": "exit"}
+
+ACTION_CONFIG = {
+    "cancel_order": {"verb": "cancel", "noun": "Cancellation", "done": "cancelled"},
+    "return_order": {"verb": "return", "noun": "Return", "done": "returned"},
+}
+
 
 # SHOW MENU PAYLOADS INTERRUPT
 def build_welcome_payload(is_followup: bool = False) -> Dict[str, Any]:
@@ -23,17 +34,16 @@ def build_post_action_payload() -> Dict[str, Any]:
     return {
         "prompt": "",
         "options": [
-            {"label": "📦 View Other Orders", "value": "track_order"},
-            {"label": "👋 I'm All Done (Exit)", "value": "exit"},
+            BTN_TRACK,
+            BTN_EXIT,
         ],
     }
 
 
-def build_order_list_payload(
-    action: str,
-    orders: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    action_verb = "cancel" if action == "cancel_order" else "return"
+def build_order_list_payload(action: str, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
+    action_verb = cfg["verb"]
 
     if not orders:
         if action == "cancel_order":
@@ -51,12 +61,13 @@ def build_order_list_payload(
         return {
             "prompt": prompt,
             "options": [
-                {"label": "📦 View Recent Orders", "value": "track_order"},
-                {"label": "💬 Talk to Specialist", "value": "ticket"},
-                {"label": "🏠 Main Menu", "value": "menu"},
+                BTN_TRACK,
+                BTN_SPECIALIST,
+                BTN_MENU,
             ],
         }
 
+    # show on ui total orders proper
     cards = "\n\n".join([
         f"• **Order #ORD-{order.get('order_id')}** — "
         f"Status: **{order.get('status')}**\n"
@@ -65,6 +76,7 @@ def build_order_list_payload(
         for order in orders
     ])
 
+    # orders options
     options = [
         {
             "label": f"📦 ORD-{order.get('order_id')}",
@@ -74,30 +86,30 @@ def build_order_list_payload(
     ]
 
     options.extend([
-        {"label": "💬 Talk to Specialist", "value": "ticket"},
-        {"label": "🔙 Back to Main Menu", "value": "menu"},
+        BTN_SPECIALIST,
+        BTN_MENU,
     ])
 
     return {
         "prompt": f"📦 **Select an order to {action_verb}:**\n\n{cards}",
         "options": options,
     }
-def build_item_selection_payload(
-    order_id: str,
-    action: str,
-    active_items: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    action_verb = "cancel" if action == "cancel_order" else "return"
-    action_noun = "Cancellation" if action == "cancel_order" else "Return"
+
+
+def build_item_selection_payload(order_id: str,action: str,active_items: List[Dict[str, Any]],) -> Dict[str, Any]:
+    
+    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
+    action_verb = cfg["verb"]
+    action_noun = cfg["noun"]
 
     items_data = [
         {
-            "item_id": it.get("order_item_id") or it.get("id"),
-            "name": it.get("product_name", "Item"),
-            "quantity": int(it.get("quantity", 1)),
-            "unit_price": float(it.get("unit_price", 0)),
+            "item_id": item.get("order_item_id"),
+            "name": item.get("product_name", "Item"),
+            "quantity": int(item.get("quantity")),
+            "unit_price": float(item.get("unit_price")),
         }
-        for it in active_items
+        for item in active_items
     ]
 
     return {
@@ -111,26 +123,24 @@ def build_item_selection_payload(
         "prompt": f"Please select the items and quantities you wish to {action_verb} for Order #ORD-{order_id}:",
         "options": [
             {"label": f"❌ {action_verb.title()} Whole Order", "value": "all"},
-            {"label": "🔙 Back to Main Menu", "value": "menu"},
+            BTN_MENU,
         ],
     }
 
-def build_confirmation_payload(
-    order_id: str,
-    action: str,
-    selected_items: List[Dict[str, Any]],
-    refund_amount: float,
-) -> Dict[str, Any]:
-    action_verb = "cancel" if action == "cancel_order" else "return"
-    action_noun = "Cancellation" if action == "cancel_order" else "Return"
 
-    items_summary = "\n".join([
-        f"• {it.get('quantity', 1)}× {it.get('name', 'Item')} (₹{float(it.get('unit_price', 0)) * int(it.get('quantity', 1)):.2f})"
-        for it in selected_items
+def build_confirmation_payload(order_id: str,action: str,selected_items: List[Dict[str, Any]],refund_amount: float,) -> Dict[str, Any]:
+    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
+    action_verb = cfg["verb"]
+    action_noun = cfg["noun"]
+
+    items_summary = "\n".join(
+        [
+        f"• {items.get('quantity', 1)}× {items.get('name', 'Item')} (₹{float(items.get('unit_price', 0)) * int(items.get('quantity', 1)):.2f})"
+        for items in selected_items
     ])
 
     prompt = (
-        f"⚠️ **Confirm {action_noun}**\n\n"
+    f"⚠️ **Confirm {action_noun} (Order #ORD-{order_id})**\n\n"
         f"**Selected Items:**\n{items_summary}\n\n"
         f"💰 **Estimated Refund:** ₹{refund_amount:.2f}\n\n"
         f"Are you sure you want to proceed with this {action_verb}?"
@@ -138,9 +148,10 @@ def build_confirmation_payload(
     options = [
         {"label": f"✅ Yes, Confirm {action_noun}", "value": "confirm"},
         {"label": f"❌ Keep Order (Don't {action_verb.title()})", "value": "abort"},
-        {"label": "🔙 Back to Main Menu", "value": "menu"},
+        BTN_MENU,
     ]
     return {"prompt": prompt, "options": options}
+
 
 def build_receipt_message(
     order_id: str,
@@ -148,7 +159,8 @@ def build_receipt_message(
     selected_items: List[Dict[str, Any]],
     refund_amount: float,
 ) -> str:
-    action_done = "cancelled" if action == "cancel_order" else "returned"
+    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
+    action_done = cfg["done"]
     sec_tag = "[SEC-4.0]" if action == "cancel_order" else "[SEC-3.1]"
 
     items_summary = "\n".join([
@@ -166,22 +178,26 @@ def build_receipt_message(
         f"*(You are completely free to ask anything about your refund, other orders, or store policies!)*"
     )
 
+
 def build_blocked_payload(
     action: str,
     order_id: str,
     reason: str = "",
 ) -> Dict[str, Any]:
-    action_noun = "Cancellation" if action == "cancel_order" else "Return"
+    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
+    action_noun = cfg["noun"]
+
     prompt = (
         f"⚠️ **{action_noun} Unavailable for Order #ORD-{order_id}**\n\n"
         f"{reason}\n\n"
         f"Would you like to connect with a support specialist or return to the main menu?"
     )
     options = [
-        {"label": "💬 Talk to Specialist", "value": "ticket"},
-        {"label": "🏠 Main Menu", "value": "menu"},
+        BTN_SPECIALIST,
+        BTN_MENU,
     ]
     return {"prompt": prompt, "options": options}
+
 
 def build_escalation_message(user_id: int) -> str:
     return (
