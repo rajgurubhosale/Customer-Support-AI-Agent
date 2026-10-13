@@ -21,9 +21,10 @@ Classify the customer's message into exactly one intent:
 - 'abort': user wants to go back, return to menu, cancel current action, or says goodbye/nevermind.
 - 'faq': user asks about policies, refund timelines, return windows, doorstep QC, warranties, or general store questions.
 - 'other': greetings or general conversational chat.
+- 'report_issue': user reports a problem with an order or product, including delivery issues (delayed, possibly lost, tracking not updating, delivered not received) or item issues (damaged, defective, missing, wrong item, wrong variant). Note: pure cancellation or return requests go to 'cancel_order' or 'return_order'; only complaints or problems with orders/items go here.
+- 'track_case': user asks about the status, update, or progress of an existing support case or complaint ticket (e.g., 'status of case #12', 'any update on my ticket?').
 
 Extract any mentioned order ID as clean digits (e.g., 'ORD-15', '#15', 'order 15' -> '15').
-
 ==================== REPLY GENERATION RULES ====================
 - For a pure cancellation or return request with no explicit policy question, set 'reply' to null.
 - Provide 'reply' only when the customer explicitly asks a policy/timeline question or challenges a policy, including when the primary intent is 'cancel_order' or 'return_order'.

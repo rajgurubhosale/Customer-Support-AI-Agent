@@ -1,8 +1,13 @@
 import threading
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from customer_support_ai_agent.intent_router import SYSTEM_PROMPT
 from customer_support_ai_agent.model import model
 from langchain_core.messages import SystemMessage, HumanMessage
+
+from customer_support_ai_agent.db_functions import get_order_history
+from customer_support_ai_agent.issues.issues_db import get_case_for_customer, get_cases_for_customer
+from backend.schemas.chat import ChatRequest, ChatResponse
+from backend.helper import execute_agent_turn
 
 
 def warmup_kv_cache():
@@ -40,10 +45,6 @@ def welcome():
     }
     
 
-from customer_support_ai_agent.db_functions import get_order_history
-from backend.schemas import ChatRequest, ChatResponse
-from backend.helper import execute_agent_turn
-
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -65,6 +66,19 @@ def get_orders(user_id: int):
         "user_id": user_id,
         "orders": get_order_history(user_id) or []
     }
+
+
+@app.get("/cases/{user_id}")
+def get_cases(user_id: int):
+    return {"cases": get_cases_for_customer(user_id)}
+
+
+@app.get("/cases/{user_id}/{case_id}")
+def get_case(user_id: int, case_id: int):
+    case = get_case_for_customer(case_id, user_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case
 
 # terminal code
 def main():

@@ -17,7 +17,7 @@ def chat_with_backend(user_id: int, thread_id: str, message: Any = None) -> dict
         "thread_id": thread_id,
         "message": message.strip() if isinstance(message, str) else message,
     }
-    response = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=30)
+    response = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=(5, 120))
     response.raise_for_status()
     return response.json()
 
@@ -27,3 +27,17 @@ def get_orders(user_id: int) -> list[dict]:
     response = requests.get(f"{BACKEND_URL}/orders/{user_id}", timeout=3)
     response.raise_for_status()
     return response.json().get("orders", [])
+
+
+def get_cases(user_id: int) -> list[dict]:
+    """Return the customer's recent support cases."""
+    response = requests.get(f"{BACKEND_URL}/cases/{user_id}", timeout=3)
+    response.raise_for_status()
+    return response.json().get("cases", [])
+
+
+def get_case(user_id: int, case_id: int) -> dict:
+    """Return one case and its linked issues."""
+    response = requests.get(f"{BACKEND_URL}/cases/{user_id}/{case_id}", timeout=3)
+    response.raise_for_status()
+    return response.json()

@@ -10,7 +10,10 @@ wheels/
 src\customer_support_ai_agent\current.md
 .venv
 notebooks/temp.ipynb
-/docs
+/docs/*
+!/docs/000_base_schema.sql
+!/docs/001_v1_schema.sql
+!/docs/002_v1_seed.sql
 FUTURE_IMPLEMENT_PLAN.md
 src/codebasewalkthrough
 md
@@ -19,7 +22,7 @@ implementthis.md
 notebooks/myplan.md
 notebooks/plan.md
 GEMINI.md
-
+docs
 tests
 .env
 src/customer_support_ai_agent/current.md
@@ -29,6 +32,6 @@ CODEBASE_GUIDE.md
 
 datasets
 src/customer_support_ai_agent/__pycache__
-
+new_architecture_changes.md
 .vscode
 notebooks\plan.md

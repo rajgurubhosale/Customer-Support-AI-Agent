@@ -133,4 +133,5 @@ def render_quick_options(
                 key=f"option_{index}_{key_suffix}",
                 width="stretch",
             ):
-                on_submit(value, label)
+                payload = {"action": value, "value": value}
+                on_submit(payload, label)

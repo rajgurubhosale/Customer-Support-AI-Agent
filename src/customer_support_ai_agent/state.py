@@ -2,16 +2,24 @@ from typing import TypedDict, Optional, Annotated, Literal, Any, Dict
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
+
 class CustomerState(TypedDict, total=False):
     user_id: Optional[int]
     session_id: Optional[str]
 
-    action_type: Optional[Literal["cancel_order", "return_order", "faq", "human_support", "exit"]]
+    action_type: Optional[Literal[
+        "cancel_order", "return_order", "faq",
+        "human_support", "exit", "report_issue", "track_case"
+    ]]
+
     order_id: Optional[str]
     
     customer_details: Optional[Dict[str, Any]]
     confirmed: Optional[bool]
-
     context: Optional[Dict[str, Any]]
     messages: Annotated[list[BaseMessage], add_messages]
 
+    # Issue tracking
+    draft: Optional[Dict[str, Any]]
+    guard_retries: int
+    case_id: Optional[str]

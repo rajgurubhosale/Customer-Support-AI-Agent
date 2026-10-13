@@ -139,11 +139,13 @@ def build_confirmation_payload(order_id: str,action: str,selected_items: List[Di
         for items in selected_items
     ])
 
+    question = ("Are you sure you want to request this return?" if action == "return_order"
+                else f"Are you sure you want to proceed with this {action_verb}?")
     prompt = (
     f"⚠️ **Confirm {action_noun} (Order #ORD-{order_id})**\n\n"
         f"**Selected Items:**\n{items_summary}\n\n"
         f"💰 **Estimated Refund:** ₹{refund_amount:.2f}\n\n"
-        f"Are you sure you want to proceed with this {action_verb}?"
+        f"{question}"
     )
     options = [
         {"label": f"✅ Yes, Confirm {action_noun}", "value": "confirm"},
@@ -158,24 +160,22 @@ def build_receipt_message(
     action: str,
     selected_items: List[Dict[str, Any]],
     refund_amount: float,
+    action_id: int,
 ) -> str:
-    cfg = ACTION_CONFIG.get(action, ACTION_CONFIG["cancel_order"])
-    action_done = cfg["done"]
-    sec_tag = "[SEC-4.0]" if action == "cancel_order" else "[SEC-3.1]"
-
     items_summary = "\n".join([
         f"• {it.get('quantity', 1)}× {it.get('name', 'Item')} (₹{float(it.get('unit_price', 0)) * int(it.get('quantity', 1)):.2f})"
         for it in selected_items
     ])
-
+    if action == "cancel_order":
+        return (
+            f"✅ **Cancellation completed for ORD-{order_id}** (Action #{action_id})\n\n"
+            f"{items_summary}\n\nRefund recorded: ₹{refund_amount:.2f}. "
+            "This demo records refund initiation but does not transfer money through a payment provider [SEC-4.0]."
+        )
     return (
-        f"✅ **Order #{order_id} — {action_done.title()} Successfully!**\n\n"
-        f"**Items {action_done.title()}:**\n{items_summary}\n\n"
-        f"💰 **Total Refund:** ₹{refund_amount:.2f}\n\n"
-        f"A refund of ₹{refund_amount:.2f} has been initiated to your original payment method (takes 4–7 business days) {sec_tag}.\n\n"
-        f"---\n"
-        f"**Is there anything else I can help you with today?**\n\n"
-        f"*(You are completely free to ask anything about your refund, other orders, or store policies!)*"
+        f"✅ **Return request recorded for ORD-{order_id}** (Action #{action_id})\n\n"
+        f"{items_summary}\n\nEstimated refund: ₹{refund_amount:.2f}. "
+        "The request awaits inspection; no refund has been initiated [SEC-3.0, SEC-4.1]."
     )
 
 

@@ -30,19 +30,23 @@ def _check_global_route(action: Optional[str]) -> Optional[str]:
 # GRAPH ROUTERS
 
 def route_open_router(state: CustomerState) -> str:
-    """
-    Routes from open_router_node (the conversational front door).
-    """
     action = state.get("action_type")
     target = _check_global_route(action)
-    
+
     if target:
         return target
 
     if action in ("cancel_order", "return_order"):
         return "order_lookup_node"
     
+    if action == "report_issue":
+        return "issue_wait_node" if state.get("draft") else "issue_agent_node"
+
+    if action == "track_case":
+        return "track_case_node"
+
     return "start_node"
+
 
 
 def route_order_lookup(state: CustomerState) -> str:

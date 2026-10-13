@@ -1,8 +1,11 @@
 from IPython.core import display_functions
 from IPython.core import display_functions
+import hashlib
+import json
 import re
 from typing import Any, Optional
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
@@ -13,8 +16,9 @@ from customer_support_ai_agent.schemas import (
     UserInput,
     UserIntent,
 )
-from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history
+from customer_support_ai_agent.db_functions import get_order_with_items, get_order_history, execute_order_action
 from customer_support_ai_agent.intent_router import classify_user_intent
+from customer_support_ai_agent.issues.case_ids import parse_case_id
 from customer_support_ai_agent.ui_payloads import (
     build_welcome_payload,
     build_post_action_payload,
@@ -110,20 +114,20 @@ def _format_order_card(order: dict) -> str:
         name = item.get("product_name", "Item")
         quantity = item.get("quantity", 1)
         price = float(item.get("unit_price", 0))
-        item_lines.append(f"  • {name} — Qty: {quantity} (₹{price:.2f})")
-    items_summary = "\n".join(item_lines) or "  • No item details found"
-
+        item_status = item.get("item_status")
+        status_tag = f" — [{item_status}]" if item_status else ""
+        item_lines.append(f"- **{name}** — Qty: {quantity} (₹{price:.2f}){status_tag}")
+    items_summary = "\n".join(item_lines) or "- No item details found"
 
     return (
-        f"📦 **Order Details: #ORD-{order_id}**\n"
-        f"• **Status:** **{status}**\n"
-        f"• **Order Date:** {order_date}\n"
-        f"• **Total Amount:** ₹{total_amount:.2f}\n\n"
+        f"📦 **Order Details: #ORD-{order_id}**\n\n"
+        f"- **Status:** **{status}**\n"
+        f"- **Order Date:** {order_date}\n"
+        f"- **Total Amount:** ₹{total_amount:.2f}\n\n"
         f"🛒 **Items in this order:**\n{items_summary}"
     )
 
 
-7
 def _format_recent_orders(orders: list[dict],limit:int = 5) -> str:
     """
     user aks genrally show my last orders then it 
@@ -165,29 +169,38 @@ def _validate_and_fetch_order(val: Any, user_id: int) -> Optional[dict]:
     return None
 
 
-def _handle_tracking_response(order_id: Optional[str], user_id: int) -> dict:
+def _handle_tracking_response(
+    order_id: Optional[str],
+    user_id: int,
+    reply: Optional[str] = None,
+) -> dict:
     """Single authoritative resolver for order tracking queries."""
     found = _validate_and_fetch_order(order_id, user_id)
 
     if found:
-        msg = _format_order_card(found["customer_details"])
+        card = _format_order_card(found["customer_details"])
+        msg = f"{reply}\n\n{card}" if reply else card
 
     elif order_id:
         msg = f"⚠️ I couldn't find order #{order_id} under your account."
+
+    elif reply:
+        msg = reply
 
     else:
         msg = _format_recent_orders(get_order_history(user_id) or [])
 
     return reset_to_menu(msg)
 
-
 def _handle_midflow_redirect(
     decision: UserIntent,
     user_id: int,
     current_action: Optional[str] = None,
     abort_msg: Optional[str] = None,
+    raw_text: Optional[str] = None,
+    fallback_order_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Redirects the user if they change their intent mid-workflow with clean state wiping."""
+    """Handle a change of intent while clearing the previous workflow state."""
     if decision.intent == "abort":
         return reset_to_menu(abort_msg)
 
@@ -195,18 +208,34 @@ def _handle_midflow_redirect(
         return {"action_type": "human_support", "confirmed": None}
 
     if decision.intent == "track_order":
-        return _handle_tracking_response(decision.order_id, user_id)
+        target_order = decision.order_id or fallback_order_id
+        return _handle_tracking_response(target_order, user_id, reply=decision.reply)
 
-    # Action switch or start: clears previous transactional context
-    if decision.intent in ("cancel_order", "return_order") and decision.intent != current_action:
-        messages = [AIMessage(content=decision.reply)] if decision.reply else []
+    if (
+        decision.intent in ("cancel_order", "return_order", "report_issue")
+        and decision.intent != current_action
+    ):
+        messages = ([RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(content=raw_text.strip())]
+                    if decision.intent == "report_issue" and raw_text and raw_text.strip()
+                    else [AIMessage(content=decision.reply)] if decision.reply else [])
         return {
             "action_type": decision.intent,
-            "order_id": decision.order_id,
+            "order_id": None if decision.intent == "report_issue" else decision.order_id,
             "customer_details": None,
             "context": None,
             "confirmed": None,
             "messages": messages,
+            "draft": None,
+            "guard_retries": 0,
+        }
+
+    if decision.intent == "track_case":
+        return {
+            "action_type": "track_case",
+            "case_id": parse_case_id(raw_text or ""),
+            "customer_details": None,
+            "context": None,
+            "confirmed": None,
         }
 
     return None
@@ -281,13 +310,44 @@ def start_node(state: CustomerState) -> dict:
     if cmd:
         return cmd
 
+    # Fast-path for direct UI button clicks (0 LLM latency)
+    if user_input.action == "report_issue":
+        return {
+        "action_type": "report_issue",
+        "confirmed": None,
+        "order_id": None,
+        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
+        "draft": {"issues": [{"next_step": "ask_customer", "question": "Please describe what happened with your order or item."}]},
+        "guard_retries": 0,
+    }
+
+
+    if user_input.action == "track_case":
+        return {"action_type": "track_case",
+                "case_id": parse_case_id(str(user_input.data.get("case_id") or "")),
+                "confirmed": None}
+
+    if case_id := parse_case_id(user_input.text):
+        return {"action_type": "track_case", "case_id": case_id, "confirmed": None}
+
     # Routes customer to cancel, return, tracking, human support, or abort
     decision = classify_user_intent(user_input.text)
+
+    fallback_order_id = state.get("order_id")
+    if not fallback_order_id and state.get("messages"):
+        for m in reversed(state.get("messages", [])):
+            content = getattr(m, "content", "")
+            m_match = re.search(r"\bORD-(\d+)\b", content, re.IGNORECASE)
+            if m_match:
+                fallback_order_id = m_match.group(1)
+                break
 
     redirect = _handle_midflow_redirect(
         decision,
         int(user_id),
         abort_msg="No problem! Have a wonderful day! 👋",
+        raw_text=user_input.text,
+        fallback_order_id=fallback_order_id,
     )
     if redirect is not None:
         return redirect
@@ -315,11 +375,11 @@ def order_lookup_node(state: CustomerState) -> dict:
 
     # Fetch orders of the user to show on UI
     all_orders = get_order_history(user_id,limit=5) or []
-    eligible_orders = [    
-        order
-        for order in all_orders
-        if check_order_eligibility(order, action) is None  
-    ]
+    eligible_orders = []
+    for summary in all_orders:
+        order = summary if summary.get("items") else get_order_with_items(summary["order_id"], customer_id=user_id)
+        if order and check_order_eligibility(order, action) is None:
+            eligible_orders.append(order)
     payload = build_order_list_payload(action,eligible_orders)
     user_input, cmd = interrupt_and_get_user_response(payload)
 
@@ -337,7 +397,12 @@ def order_lookup_node(state: CustomerState) -> dict:
 
     # section B : for conversational queries handled by AI
     decision = classify_user_intent(user_input.text)
-    redirect = _handle_midflow_redirect(decision, user_id, current_action=action)
+    redirect = _handle_midflow_redirect(
+        decision,
+        user_id,
+        current_action=action,
+        raw_text=user_input.text,
+    )
     if redirect is not None:
         return redirect
 
@@ -421,6 +486,7 @@ def select_items_node(state: CustomerState) -> dict:
             user_id,
             current_action=action,
             abort_msg="Understood! Returning to main menu.",
+            raw_text=user_input.text,
         )
         if redirect is not None:
             return redirect
@@ -520,40 +586,35 @@ def confirm_action_node(state: CustomerState) -> dict:
     }
 
 
-def cancel_order_node(state: CustomerState) -> dict:
-    """Executes cancellation and returns authoritative receipt message."""
+def _execute_action_node(state: CustomerState, action: str) -> dict:
+    """Write the confirmed action before showing a receipt."""
     ctx = state.get("context") or {}
-    order_id = str(ctx.get("order_id") or state.get("order_id") or "")
-    refund = float(ctx.get("refund_amount", 0.0))
-    items = ctx.get("items", [])
+    try:
+        if not state.get("session_id") or not state.get("user_id"):
+            raise ValueError("Your session expired. Please start again.")
+        order_id = int(ctx["order_id"])
+        items = ctx["items"]
+        key_data = [state["session_id"], state["user_id"], action, order_id, items]
+        key = hashlib.sha256(json.dumps(key_data, sort_keys=True).encode()).hexdigest()
+        result = execute_order_action(
+            int(state["user_id"]), order_id, action, items, ctx["refund_amount"], key,
+        )
+        receipt = build_receipt_message(str(order_id), action, result["items"],
+                                        result["refund_amount"], result["action_id"])
+    except (KeyError, TypeError, ValueError) as error:
+        return reset_to_menu(f"⚠️ No changes were made. {error}")
+    except Exception:
+        return reset_to_menu("⚠️ We couldn't confirm the result. Please check your order before trying again.")
+    return {**reset_to_menu(receipt), "confirmed": True}
 
-    receipt = build_receipt_message(order_id, "cancel_order", items, refund)
-    return {
-        "messages": [AIMessage(content=receipt)],
-        "action_type": None,
-        "order_id": None,
-        "customer_details": None,
-        "confirmed": True,
-        "context": None,
-    }
+
+def cancel_order_node(state: CustomerState) -> dict:
+    return _execute_action_node(state, "cancel_order")
 
 
 def return_order_node(state: CustomerState) -> dict:
-    """Executes return and returns courier pickup receipt message."""
-    ctx = state.get("context") or {}
-    order_id = str(ctx.get("order_id") or state.get("order_id") or "")
-    refund = float(ctx.get("refund_amount", 0.0))
-    items = ctx.get("items", [])
+    return _execute_action_node(state, "return_order")
 
-    receipt = build_receipt_message(order_id, "return_order", items, refund)
-    return {
-        "messages": [AIMessage(content=receipt)],
-        "action_type": None,
-        "order_id": None,
-        "customer_details": None,
-        "confirmed": True,
-        "context": None,
-    }
 
 
 def policy_blocked_node(state: CustomerState) -> dict:

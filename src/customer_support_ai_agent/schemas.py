@@ -12,11 +12,15 @@ DIRECT_ACTIONS = frozenset({
     "human",
     "exit",
     "track_order",
+    "report_issue",
+    "track_case",
 })
 
-
+ 
 class UserIntent(BaseModel):
     intent: Literal[
+        "report_issue",  
+        "track_case",
         "cancel_order",
         "return_order",
         "track_order",
@@ -27,7 +31,7 @@ class UserIntent(BaseModel):
     ] = Field(description="The primary detected intent of the customer message.")
     order_id: Optional[str] = Field(
         default=None,
-        description="Extracted numeric order ID if user mentioned one (e.g. '15' for 'ORD-15' or '#15').",
+        description="Extracted numeric order ID if user mentioned one (e.g. '15' for 'ORD-15' or '#15'). Do not add imaginory order id.",
     )
     reply: Optional[str] = Field(
         default=None,
@@ -56,19 +60,19 @@ class SelectedItemInput(BaseModel):
     item_id: str | int
     quantity: int = Field(gt=0)
 
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def reject_bool_quantity(cls, v: Any) -> Any:
+        if isinstance(v, bool):
+            raise ValueError("Boolean quantity is not allowed.")
+        return v
+
+
 class PartialItemSelection(BaseModel):
     """Validated payload for a partial cancellation or return."""
 
     scope: Literal["partial"] = "partial"
     items: list[SelectedItemInput] = Field(min_length=1)
-
-    @field_validator("items")
-    @classmethod
-    def check_unique_items(cls, items: list[SelectedItemInput]) -> list[SelectedItemInput]:
-        ids = [str(it.item_id) for it in items]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Duplicate items selected in payload.")
-        return items
 
 
 

@@ -18,8 +18,14 @@ from customer_support_ai_agent.routes import (
     route_blocked_choice,
 )
 from customer_support_ai_agent.state import CustomerState
-
-
+from customer_support_ai_agent.issues.issue_nodes import (
+    issue_agent_node,
+    issue_finalize_node,
+    issue_wait_node,
+    issue_review_node,
+    issue_submit_node,
+    track_case_node,
+)
 graph = StateGraph(CustomerState)
 
 # REGISTER NODES
@@ -32,6 +38,13 @@ graph.add_node("cancel_order_node", cancel_order_node)
 graph.add_node("return_order_node", return_order_node)
 graph.add_node("policy_blocked_node", policy_blocked_node)
 graph.add_node("human_escalate_node", human_escalate_node)
+graph.add_node("issue_agent_node", issue_agent_node)
+graph.add_node("issue_finalize_node", issue_finalize_node)
+graph.add_node("issue_wait_node", issue_wait_node)
+graph.add_node("issue_review_node", issue_review_node)
+graph.add_node("issue_submit_node", issue_submit_node)
+graph.add_node("track_case_node", track_case_node)
+
 
 
 # EDGES
@@ -39,6 +52,8 @@ graph.add_edge(START, "start_node")
 graph.add_edge("cancel_order_node", "start_node")
 graph.add_edge("return_order_node", "start_node")
 graph.add_edge("human_escalate_node", "start_node")
+
+# Loopback Edges
 
 graph.add_conditional_edges("start_node", route_open_router)
 graph.add_conditional_edges("order_lookup_node", route_order_lookup)

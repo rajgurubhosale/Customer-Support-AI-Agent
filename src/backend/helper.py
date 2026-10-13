@@ -3,6 +3,7 @@ from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 from customer_support_ai_agent.graph import graph
 from customer_support_ai_agent.schemas import normalize_user_input
+from langchain_core.messages import AIMessage
 
 
 checkpointer = MemorySaver()
@@ -17,10 +18,11 @@ def run_graph(graph_input, config):
     interrupt_prompt  = None
 
     for event in agent.stream(graph_input, config=config, stream_mode="updates"):
-        for node_output in event.values():
+        for node_name, node_output in event.items():
             if isinstance(node_output, dict):
                 for message in node_output.get("messages", []):
-                    messages.append(message.content)
+                    if isinstance(message, AIMessage) and (node_name != "issue_agent_node" or "action_type" in node_output):
+                        messages.append(message.content)
 
 
         if "__interrupt__" in event:
@@ -53,7 +55,7 @@ def execute_agent_turn(user_id: int,user_message: Optional[Any] = None,thread_id
 
     if is_new_chat:
 
-        initial_state = {"user_id": user_id}
+        initial_state = {"user_id": user_id, "session_id": thread_id}
         interrupt_prompt , messages = run_graph(initial_state, config)
         all_messages.extend(messages)
 
